@@ -9,6 +9,8 @@ describe("MetricsService", () => {
     const metrics = new MetricsService();
     metrics.recordSchedulerRun("claim_settlement", "success", 1.2);
     metrics.recordOracleCheck("StablecoinDepeg", "failure", 0.3);
+    metrics.recordOracleStage("coingecko-usdc", "consensus", 0.4);
+    metrics.recordOracleDeadlineBreach("coingecko-usdc", "confirmation", 0.2);
     await metrics.observeSorobanRpc("send_transaction", async () => "hash");
 
     const output = await metrics.metrics();
@@ -17,6 +19,9 @@ describe("MetricsService", () => {
     expect(output).toContain('refract_scheduler_run_duration_seconds_count{scheduler="claim_settlement"} 1');
     expect(output).toContain('refract_oracle_checks_total{coverage_type="StablecoinDepeg",outcome="failure"} 1');
     expect(output).toContain('refract_oracle_check_duration_seconds_count{coverage_type="StablecoinDepeg"} 1');
+    expect(output).toContain('refract_oracle_stage_duration_seconds_count{feed="coingecko-usdc",stage="consensus"} 1');
+    expect(output).toContain('refract_oracle_deadline_breaches_total{feed="coingecko-usdc",stage="confirmation"} 1');
+    expect(output).toContain('refract_oracle_deadline_overrun_seconds_count{feed="coingecko-usdc",stage="confirmation"} 1');
     expect(output).toContain('refract_soroban_rpc_duration_seconds_count{operation="send_transaction",outcome="success"} 1');
   });
 

@@ -1,8 +1,9 @@
-import { BadRequestException, Injectable } from "@nestjs/common";
+import { BadRequestException, Injectable, Optional } from "@nestjs/common";
 import { COVERAGE_TYPES, coverageTypeByName } from "../common/coverage-types";
 import { CoverageTypeName } from "./coverage-type";
 import { CompareQuotesDto } from "./dto/compare-quotes.dto";
 import { CreateQuoteDto } from "./dto/create-quote.dto";
+import { OracleTrustService } from "../oracle/oracle-trust.service";
 
 export interface QuoteResult {
   coverageType: CoverageTypeName;
@@ -39,6 +40,9 @@ export interface CoverageTypeInfo {
   riskLevel: string;
   maxDuration: number;
   riskMultiplier: number;
+  available: boolean;
+  requiredFeeds: string[];
+  unavailableReason?: string;
 }
 
 const DEFAULT_THRESHOLDS: Record<CoverageTypeName, number> = {
@@ -53,6 +57,8 @@ const BASE_RATE = 0.03; // 3% annual base premium
 
 @Injectable()
 export class QuoteService {
+  constructor(@Optional() private readonly oracleTrust?: OracleTrustService) {}
+
   private calcPremium(coverageAmount: number, riskMultiplier: number, durationDays: number): number {
     const annualPremium = coverageAmount * BASE_RATE * riskMultiplier;
     const dailyPremium = annualPremium / 365;
@@ -69,6 +75,15 @@ export class QuoteService {
     const catalogEntry = coverageTypeByName(coverageType);
     if (!catalogEntry) {
       throw new BadRequestException({ error: `Unknown coverage type: ${coverageType}` });
+    }
+    const availability = this.oracleTrust?.getCoverageAvailability(coverageType);
+    if (availability && !availability.available) {
+      throw new BadRequestException({
+        error: `${catalogEntry.name} coverage is unavailable`,
+        requiredFeeds: availability.requiredFeeds,
+        unavailableFeeds: availability.unavailableFeeds,
+        reason: availability.reason,
+      });
     }
     if (durationDays > catalogEntry.maxDuration) {
       throw new BadRequestException({
@@ -119,14 +134,22 @@ export class QuoteService {
   }
 
   listCoverageTypes(): CoverageTypeInfo[] {
-    return COVERAGE_TYPES.map(({ key, name, description, trigger, riskLevel, maxDuration, riskMultiplier }) => ({
-      id: key,
-      name,
-      description,
-      trigger,
-      riskLevel,
-      maxDuration,
-      riskMultiplier,
-    }));
+    return COVERAGE_TYPES.map(
+      ({ key, name, description, trigger, riskLevel, maxDuration, riskMultiplier }) => {
+        const availability = this.oracleTrust?.getCoverageAvailability(key);
+        return {
+          id: key,
+          name,
+          description,
+          trigger,
+          riskLevel,
+          maxDuration,
+          riskMultiplier,
+          available: availability?.available ?? true,
+          requiredFeeds: availability?.requiredFeeds ?? [],
+          unavailableReason: availability?.reason,
+        };
+      },
+    );
   }
 }

@@ -150,5 +150,3 @@ export class ClaimScheduler implements OnModuleInit, OnApplicationShutdown {
     });
   }
 }
-  }
-}

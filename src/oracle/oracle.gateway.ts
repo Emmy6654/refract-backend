@@ -1,12 +1,12 @@
 import {
   OnGatewayConnection,
   OnGatewayDisconnect,
-  OnModuleDestroy,
   WebSocketGateway,
   WebSocketServer,
 } from '@nestjs/websockets';
-import { Logger } from '@nestjs/common';
+import { Logger, OnModuleDestroy } from '@nestjs/common';
 import { Server, WebSocket } from 'ws';
+import { OracleReading } from './oracle-reading';
 
 @WebSocketGateway({ path: '/oracle' })
 export class OracleGateway
@@ -15,17 +15,45 @@ export class OracleGateway
   private readonly logger = new Logger(OracleGateway.name);
 
   @WebSocketServer()
-  server: Server;
+  server!: Server;
 
   handleConnection(client: WebSocket): void {
     this.logger.log('Oracle WebSocket client connected');
+    client.send(JSON.stringify({
+      type: 'connected',
+      message: 'Refract oracle feed connected',
+      timestamp: new Date().toISOString(),
+    }));
     client.on('error', (err) => {
       this.logger.warn(`Oracle WebSocket client error: ${err.message}`);
     });
   }
 
-  handleDisconnect(client: WebSocket): void {
+  handleDisconnect(_client: WebSocket): void {
     this.logger.log('Oracle WebSocket client disconnected');
+  }
+
+  broadcastAlert(reading: OracleReading): void {
+    if (!this.server?.clients) {
+      return;
+    }
+    const message = JSON.stringify({
+      type: 'oracle_alert',
+      data: reading,
+      timestamp: new Date().toISOString(),
+    });
+    for (const client of this.server.clients) {
+      if (client.readyState !== WebSocket.OPEN) {
+        continue;
+      }
+      try {
+        client.send(message);
+      } catch (error) {
+        this.logger.warn(
+          `Failed to send oracle alert: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
   }
 
   /**

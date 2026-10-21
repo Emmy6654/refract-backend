@@ -14,6 +14,7 @@ import {
 import { AppConfig } from "../config/configuration";
 import { MetricsService } from "../metrics/metrics.service";
 import { PolicyService } from "./policy.service";
+import { OracleTrustService } from "../oracle/oracle-trust.service";
 import { BuyPolicyDto } from "./dto/buy-policy.dto";
 
 const NETWORK_PASSPHRASE = "Test SDF Network ; September 2015";
@@ -380,6 +381,25 @@ describe("PolicyService", () => {
   describe("listTypes", () => {
     it("returns all five coverage types", () => {
       expect(service.listTypes()).toHaveLength(5);
+    });
+
+    it("marks products unavailable and rejects buying until their required feed is confirmed", async () => {
+      const trust = new OracleTrustService();
+      const guardedService = new PolicyService(
+        buildConfig(),
+        new MetricsService(),
+        undefined,
+        trust,
+      );
+
+      expect(guardedService.listTypes()[0].available).toBe(false);
+      await expect(guardedService.buy(buildDto(holder))).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+
+      trust.recordObservation("coingecko-usdc", true);
+      trust.recordPublication("coingecko-usdc", true);
+      expect(guardedService.listTypes()[0].available).toBe(true);
     });
   });
 });

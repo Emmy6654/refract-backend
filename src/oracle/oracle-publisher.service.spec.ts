@@ -2,8 +2,10 @@ import { ConfigService } from "@nestjs/config";
 import { Account, Keypair, StrKey, TransactionBuilder, nativeToScVal, rpc, scValToNative, xdr } from "@stellar/stellar-sdk";
 import { AppConfig } from "../config/configuration";
 import { OraclePublisherService } from "./oracle-publisher.service";
+import { MetricsService } from "../metrics/metrics.service";
 import { scaleOracleValue, coverageTypeToU32 } from "./oracle-encoding";
 import { OracleReading } from "./oracle-reading";
+import { OracleTrustService } from "./oracle-trust.service";
 
 const NETWORK_PASSPHRASE = "Test SDF Network ; September 2015";
 
@@ -100,6 +102,40 @@ describe("OraclePublisherService", () => {
     expect(getAccountSpy).not.toHaveBeenCalled();
   });
 
+  it("never publishes without a fresh feed observation satisfying quorum", async () => {
+    const trust = new OracleTrustService();
+    const service = new OraclePublisherService(buildConfig(), undefined, trust);
+    const getAccountSpy = jest.spyOn(rpc.Server.prototype, "getAccount");
+
+    const result = await service.maybePublish(
+      reading({ feedId: "coingecko-usdc", deadlineAt: Date.now() + 10_000 }),
+    );
+
+    expect(result).toBeNull();
+    expect(getAccountSpy).not.toHaveBeenCalled();
+  });
+
+  it("aborts an expired feed budget before making an RPC call and records the breached stage", async () => {
+    const metrics = new MetricsService();
+    const service = new OraclePublisherService(buildConfig(), metrics);
+    const getAccountSpy = jest.spyOn(rpc.Server.prototype, "getAccount");
+
+    const result = await service.maybePublish(
+      reading({
+        feedId: "coingecko-usdc",
+        observedAt: Date.now() - 31_000,
+        deadlineAt: Date.now() - 1,
+      }),
+    );
+
+    expect(result).toBeNull();
+    expect(getAccountSpy).not.toHaveBeenCalled();
+    const output = await metrics.metrics();
+    expect(output).toContain(
+      'refract_oracle_deadline_breaches_total{feed="coingecko-usdc",stage="publication"} 1',
+    );
+  });
+
   it("encodes update_reading(u32, i128) with the scaled value", async () => {
     const service = new OraclePublisherService(buildConfig());
 
@@ -121,6 +157,8 @@ describe("OraclePublisherService", () => {
       envelopeXdr: {} as never,
       resultXdr: {} as never,
       resultMetaXdr: {} as never,
+      events: { transactionEventsXdr: [], contractEventsXdr: [] },
+      txHash: "oracle-tx",
     });
 
     const result = await service.maybePublish(reading({ coverageType: "MarketCrash", value: -30.12 }));
@@ -160,6 +198,8 @@ describe("OraclePublisherService", () => {
       envelopeXdr: {} as never,
       resultXdr: {} as never,
       resultMetaXdr: {} as never,
+      events: { transactionEventsXdr: [], contractEventsXdr: [] },
+      txHash: "oracle-tx",
     });
 
     const first = service.maybePublish(reading({ value: 0.99 }));
@@ -190,6 +230,8 @@ describe("OraclePublisherService", () => {
       envelopeXdr: {} as never,
       resultXdr: {} as never,
       resultMetaXdr: {} as never,
+      events: { transactionEventsXdr: [], contractEventsXdr: [] },
+      txHash: "oracle-tx",
     });
 
     const result = await service.maybePublish(reading());
@@ -219,6 +261,8 @@ describe("OraclePublisherService", () => {
       envelopeXdr: {} as never,
       resultXdr: {} as never,
       resultMetaXdr: {} as never,
+      events: { transactionEventsXdr: [], contractEventsXdr: [] },
+      txHash: "oracle-tx",
     });
 
     await service.maybePublish(reading({ value: 1.0 }));
