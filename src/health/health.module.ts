@@ -5,6 +5,7 @@ import { HealthService } from "./health.service";
 import { SorobanRpcService } from "../stellar/soroban-rpc.service";
 import { OracleService } from "../oracle/oracle.service";
 import { ClaimSettlementService } from "../claim/claim-settlement.service";
+import { OracleAttestationService } from "../oracle/oracle-attestation.service";
 
 // DatabaseModule is @Global(), so DatabaseService is available here
 // without a local import — the controller receives it via DI automatically.
@@ -15,6 +16,7 @@ import { ClaimSettlementService } from "../claim/claim-settlement.service";
     HealthService,
     SorobanRpcService,
     OracleService,
+    OracleAttestationService,
     ClaimSettlementService,
   ],
   exports: [HealthService],

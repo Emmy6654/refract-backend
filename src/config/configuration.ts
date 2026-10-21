@@ -1,5 +1,81 @@
 import { registerAs } from '@nestjs/config';
 
+export interface AppConfig {
+  app: {
+    env: string;
+    port: number;
+    sandboxMode: boolean;
+  };
+  database: {
+    url?: string;
+    host?: string;
+    port?: number;
+    username?: string;
+    password?: string;
+    name?: string;
+  };
+  stellar: {
+    network: 'testnet' | 'mainnet' | 'futurenet';
+    sorobanRpcUrl: string;
+    networkPassphrase: string;
+    poolContractId: string;
+    policyContractId: string;
+    oracleContractId: string;
+    relayerSecret?: string;
+    validateOnChain?: boolean;
+    requireNetwork?: boolean;
+    validateTimeoutMs?: number;
+    relayer?: {
+      feeMultiplier?: number;
+      feeCeiling?: number;
+      idleResyncMs?: number;
+      minBalance?: number;
+      maxAttempts?: number;
+    };
+    eventIndexer?: {
+      enabled?: boolean;
+      pollIntervalMs?: number;
+      lagAlertLedgers?: number;
+      pageLimit?: number;
+    };
+  };
+  oracles: {
+    httpTimeoutMs: number;
+    coingeckoBaseUrl: string;
+    horizonUrl: string;
+    defiLlamaBaseUrl: string;
+    defiLlamaProtocolSlug: string;
+  };
+  oraclePublish: {
+    mode: 'every_poll' | 'on_change';
+    minIntervalMs: number;
+  };
+  confirmation: {
+    initialIntervalMs: number;
+    backoffMultiplier: number;
+    maxIntervalMs: number;
+    jitterRatio: number;
+    deadlineMs?: number;
+    settlementDeadlineMs?: number;
+    httpDeadlineMs?: number;
+  };
+  throttle: {
+    upstream: { ttl: number; limit: number };
+    chain: { ttl: number; limit: number };
+    default: { ttl: number; limit: number };
+    catalog: { ttl: number; limit: number };
+  };
+  fees: {
+    profiles?: Record<string, unknown>;
+  };
+  adminApiKey?: string;
+  communityApiKeys?: string[];
+  ops?: {
+    apiToken?: string;
+    communityApiKeys?: string[];
+  };
+}
+
 /**
  * Resolves the sandbox-mode flag from the environment.
  *

@@ -121,7 +121,9 @@ describe("OraclePublisherService", () => {
       envelopeXdr: {} as never,
       resultXdr: {} as never,
       resultMetaXdr: {} as never,
-    });
+      txHash: "oracle-tx",
+      events: [],
+    } as any);
 
     const result = await service.maybePublish(reading({ coverageType: "MarketCrash", value: -30.12 }));
 
@@ -160,7 +162,9 @@ describe("OraclePublisherService", () => {
       envelopeXdr: {} as never,
       resultXdr: {} as never,
       resultMetaXdr: {} as never,
-    });
+      txHash: "oracle-tx",
+      events: [],
+    } as any);
 
     const first = service.maybePublish(reading({ value: 0.99 }));
     const second = await service.maybePublish(reading({ value: 0.98 }));
@@ -190,7 +194,9 @@ describe("OraclePublisherService", () => {
       envelopeXdr: {} as never,
       resultXdr: {} as never,
       resultMetaXdr: {} as never,
-    });
+      txHash: "oracle-tx",
+      events: [],
+    } as any);
 
     const result = await service.maybePublish(reading());
 
@@ -219,7 +225,9 @@ describe("OraclePublisherService", () => {
       envelopeXdr: {} as never,
       resultXdr: {} as never,
       resultMetaXdr: {} as never,
-    });
+      txHash: "oracle-tx",
+      events: [],
+    } as any);
 
     await service.maybePublish(reading({ value: 1.0 }));
     const sendSpy = jest.spyOn(rpc.Server.prototype, "sendTransaction");
