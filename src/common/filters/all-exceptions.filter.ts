@@ -7,7 +7,7 @@ import {
   Logger,
 } from "@nestjs/common";
 import { Request, Response } from "express";
-import { DomainError, ErrorDetails } from "../errors/domain-errors";
+import { DomainError, ErrorDetails } from "../errors";
 
 /**
  * Global exception filter (issue #60).

@@ -1,18 +1,16 @@
 import { BadRequestException, Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { randomUUID } from "node:crypto";
 import {
-  Account,
   Address,
   BASE_FEE,
   Contract,
-  Keypair,
   TransactionBuilder,
   nativeToScVal,
   rpc,
   scValToNative,
   xdr,
 } from "@stellar/stellar-sdk";
-import { v4 as uuidv4 } from "uuid";
 import { AppConfig } from "../config/configuration";
 import { MetricsService } from "../metrics/metrics.service";
 import { BuyPolicyDto } from "./dto/buy-policy.dto";
@@ -156,9 +154,10 @@ const COVERAGE_TYPES: CoverageTypeCatalogEntry[] = [
 
 @Injectable()
 export class PolicyService {
-  // In-memory store — replaced by the Postgres-backed repository in a
-  // follow-up PR that wires the app onto src/db/schema.sql.
+  // In-memory store — only confirmed on-chain policies are exposed to claim
+  // scans and lookups.
   private readonly policies = new Map<string, StoredPolicy>();
+  private readonly pendingBuys = new Map<string, StoredPolicy>();
 
   private readonly server: rpc.Server;
   private readonly networkPassphrase: string;
@@ -275,9 +274,19 @@ export class PolicyService {
    * pool is actually configured to allow right now — e.g. after an admin
    * calls set_pool_config() — which the catalog alone can't see.
    */
-  async onChainCoverageBounds(): Promise<{ minCoverage: bigint; maxCoverage: bigint } | null> {
-    if (!this.poolCo
+  async onChainCoverageBounds(holder?: string): Promise<{ minCoverage: bigint; maxCoverage: bigint } | null> {
+    if (!this.poolContractId || !holder) return null;
 
+    try {
+      const sourceAccount = await this.server.getAccount(holder);
+      const operation = new Contract(this.poolContractId).call("pool_config");
+      const tx = new TransactionBuilder(sourceAccount, {
+        fee: BASE_FEE,
+        networkPassphrase: this.networkPassphrase,
+      })
+        .addOperation(operation)
+        .setTimeout(30)
+        .build();
       const sim = await this.metricsService.observeSorobanRpc("simulate_transaction", () =>
         this.server.simulateTransaction(tx)
       );
@@ -314,6 +323,11 @@ export class PolicyService {
     return [...this.policies.values()].filter((p) => p.isActive && p.expiresAt > now);
   }
 
+  getExpiredActive(): StoredPolicy[] {
+    const now = Math.floor(Date.now() / 1000);
+    return [...this.policies.values()].filter((policy) => policy.isActive && policy.expiresAt <= now);
+  }
+
   /** Marks a policy inactive after a claim has been paid out. */
   deactivate(id: string): void {
     const policy = this.policies.get(id);
@@ -323,7 +337,59 @@ export class PolicyService {
     }
   }
 
+  /**
+   * Activates a policy only after TxService has observed a successful
+   * buy_policy transaction. Transaction hashes link the confirmation to the
+   * metadata used to build that exact unsigned buy invocation.
+   */
+  activateFromBuyConfirmation(
+    txHash: string,
+    returnValue?: xdr.ScVal
+  ): { onChainPolicyId: string } | null {
+    const pending = this.pendingBuys.get(txHash);
+    if (!pending) return null;
+
+    this.pendingBuys.delete(txHash);
+    if (!returnValue || returnValue.switch().name !== "scvU64") return null;
+
+    let policyId: string;
+    try {
+      const decoded = scValToNative(returnValue);
+      if (typeof decoded === "bigint") {
+        policyId = decoded.toString();
+      } else if (typeof decoded === "number" && Number.isSafeInteger(decoded) && decoded >= 0) {
+        policyId = decoded.toString();
+      } else if (typeof decoded === "string" && /^\d+$/.test(decoded)) {
+        policyId = decoded;
+      } else {
+        return null;
+      }
+    } catch {
+      return null;
+    }
+
+    if (BigInt(policyId) > 18_446_744_073_709_551_615n || this.policies.has(policyId)) {
+      return null;
+    }
+
+    const policy = { ...pending, id: policyId, isActive: true };
+    this.policies.set(policyId, policy);
+    return { onChainPolicyId: policyId };
+  }
+
   async buy(dto: BuyPolicyDto): Promise<{ policy: StoredPolicy; txXdr: string; message: string }> {
+    return this.buildBuy(dto, true);
+  }
+
+  async simulateBuy(dto: BuyPolicyDto): Promise<{ valid: true; policy: StoredPolicy; txXdr: string; message: string }> {
+    const result = await this.buildBuy(dto, false);
+    return { valid: true, ...result };
+  }
+
+  private async buildBuy(
+    dto: BuyPolicyDto,
+    storePolicy: boolean
+  ): Promise<{ policy: StoredPolicy; txXdr: string; message: string }> {
     const { holder, coverageType, coverageAmount, durationDays, triggerParams } = dto;
 
     const catalogEntry = COVERAGE_TYPES[coverageType];
@@ -363,7 +429,7 @@ export class PolicyService {
     // (or, after a set_pool_config() change, looser) than what the catalog
     // advertises. Catch a mismatch here with a specific error instead of
     // letting buildUnsignedBuyInvoke's simulation fail it opaquely.
-    const bounds = await this.onChainCoverageBounds();
+    const bounds = await this.onChainCoverageBounds(holder);
     if (bounds && (coverage < bounds.minCoverage || coverage > bounds.maxCoverage)) {
       throw new BadRequestException({
         error: `coverageAmount must be between ${bounds.minCoverage} and ${bounds.maxCoverage} (pool contract units) per the pool's current configuration`,
@@ -373,12 +439,12 @@ export class PolicyService {
     }
 
     const multiplier = RISK_MULTIPLIERS[coverageType];
-    const annualRate = (BASE_RATE_BPS / 10_000) * multiplier; // bps -> fraction, e.g. 300bps * 1.0 = 0.03 (3%)
+    const annualRate = (this.baseRateBps() / 10_000) * multiplier; // bps -> fraction, e.g. 300bps * 1.0 = 0.03 (3%)
     const dailyRate = annualRate / 365;
     const premiumFraction = dailyRate * durationDays;
     const premium = BigInt(Math.floor(Number(coverage) * premiumFraction));
 
-    const policyId = uuidv4();
+    const policyId = randomUUID();
     const expiresAt = Math.floor(Date.now() / 1000) + durationDays * 86400;
 
     const policy: StoredPolicy = {
@@ -390,12 +456,10 @@ export class PolicyService {
       premium: premium.toString(),
       durationDays,
       expiresAt,
-      isActive: true,
+      isActive: false,
       createdAt: new Date().toISOString(),
       triggerParams,
     };
-
-    this.policies.set(policyId, policy);
 
     const paramsScVal = this.buildPolicyParamsScVal(
       coverageType,
@@ -404,6 +468,10 @@ export class PolicyService {
       TRIGGER_THRESHOLDS[coverageType]
     );
     const txXdr = await this.buildUnsignedBuyInvoke(holder, paramsScVal);
+    if (storePolicy) {
+      const tx = TransactionBuilder.fromXDR(txXdr, this.networkPassphrase);
+      this.pendingBuys.set(tx.hash().toString("hex"), policy);
+    }
 
     return {
       policy,

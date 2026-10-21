@@ -11,8 +11,8 @@ import { StrKey } from '@stellar/stellar-sdk';
 function validateStrKey(
   value: unknown,
   isValid: (candidate: string) => boolean,
-  expected: string,
-  args: ValidationArguments,
+  _expected: string,
+  _args: ValidationArguments,
 ): boolean {
   if (typeof value !== 'string') {
     return false;

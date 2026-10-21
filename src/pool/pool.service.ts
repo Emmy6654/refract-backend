@@ -241,8 +241,8 @@ export class PoolService {
 
     try {
       const [positionRetval, stateRetval, lockupExpiresAt] = await Promise.all([
-        this.simulateRead("provider_position", encodeProviderPosition(address)),
-        this.simulateRead("pool_state", []),
+        this.simulateRead("shares_of", encodeProviderPosition(address)),
+        this.simulateRead("pool_stats", []),
         this.lockupExpiresAt(address),
       ]);
 
@@ -312,6 +312,10 @@ export class PoolService {
     };
   }
 
+  async simulateProvide(dto: DepositDto) {
+    return this.provide(dto);
+  }
+
   async withdraw(dto: WithdrawDto) {
     const { provider, shares } = dto;
     const sharesBn = BigInt(shares);
@@ -353,6 +357,10 @@ export class PoolService {
       sharePrice: mockPool.sharePrice,
       txXdr,
     };
+  }
+
+  async simulateWithdraw(dto: WithdrawDto) {
+    return this.withdraw(dto);
   }
 
   getPremiumHistory(): PremiumHistoryEntry[] {

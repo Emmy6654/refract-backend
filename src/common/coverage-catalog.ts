@@ -170,6 +170,7 @@ export const COVERAGE_CATALOG = {
     maxDuration: 7,
     icon: "✈️",
     defaultTriggerThreshold: 120,
+    maxPoolExposurePct: 35,
     status: "live",
   },
 } as const satisfies Record<CoverageType, CoverageProduct>;

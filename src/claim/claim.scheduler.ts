@@ -1,7 +1,6 @@
-import { Injectable, Logger, OnApplicationShutdown, OnModuleInit } from '@nestjs/common';
-import { Cron, CronExpression } from '@nestjs/schedule';
-import { ClaimService } from './claim.service';
-import { ProtocolParametersService } from '../parameters/protocol-parameters.service';
+import { Injectable, Logger, OnApplicationShutdown } from "@nestjs/common";
+import { Cron, CronExpression } from "@nestjs/schedule";
+import { ClaimService } from "./claim.service";
 
 /**
  * Upper bound (ms) we are willing to wait for an in-flight settlement run to
@@ -11,19 +10,8 @@ import { ProtocolParametersService } from '../parameters/protocol-parameters.ser
  */
 const SHUTDOWN_DRAIN_TIMEOUT_MS = 30_000;
 
-/**
- * Default interval (in seconds) used when the registry has no override for the
- * claim scheduler interval. Kept as a fallback only; the effective value is
- * read from the protocol-parameters registry at runtime so governance can
- * adjust it without a code deploy.
- */
-export const DEFAULT_CLAIM_SCHEDULER_INTERVAL_SECONDS = 60;
-
-/** Registry key for the claim scheduler interval. */
-export const CLAIM_SCHEDULER_INTERVAL_KEY = 'scheduler.claim.interval_seconds';
-
 @Injectable()
-export class ClaimScheduler implements OnModuleInit, OnApplicationShutdown {
+export class ClaimScheduler implements OnApplicationShutdown {
   private readonly logger = new Logger(ClaimScheduler.name);
 
   /**
@@ -40,25 +28,7 @@ export class ClaimScheduler implements OnModuleInit, OnApplicationShutdown {
 
   constructor(
     private readonly claimService: ClaimService,
-    private readonly protocolParameters: ProtocolParametersService,
   ) {}
-
-  async onModuleInit(): Promise<void> {
-    const interval = await this.getIntervalSeconds();
-    this.logger.log(`Claim scheduler initialized with interval ${interval}s`);
-  }
-
-  /**
-   * Resolve the claim scheduler interval from the protocol-parameters registry,
-   * falling back to the default when no override is configured.
-   */
-  private async getIntervalSeconds(): Promise<number> {
-    const value = await this.protocolParameters.getNumber(
-      CLAIM_SCHEDULER_INTERVAL_KEY,
-      DEFAULT_CLAIM_SCHEDULER_INTERVAL_SECONDS,
-    );
-    return value > 0 ? value : DEFAULT_CLAIM_SCHEDULER_INTERVAL_SECONDS;
-  }
 
   @Cron(CronExpression.EVERY_MINUTE)
   async handleClaimSettlement(): Promise<void> {
@@ -76,8 +46,7 @@ export class ClaimScheduler implements OnModuleInit, OnApplicationShutdown {
       return;
     }
 
-    const interval = await this.getIntervalSeconds();
-    this.logger.debug(`Running claim processing (interval=${interval}s)`);
+    this.logger.debug("Running claim processing");
 
     const run = this.runSettlement();
     this.inFlight = run;
@@ -93,7 +62,7 @@ export class ClaimScheduler implements OnModuleInit, OnApplicationShutdown {
 
   private async runSettlement(): Promise<void> {
     try {
-      await this.claimService.settleClaims();
+      await this.claimService.processTriggered();
     } catch (error) {
       this.logger.error(
         'Claim settlement run failed.',
@@ -148,7 +117,5 @@ export class ClaimScheduler implements OnModuleInit, OnApplicationShutdown {
           resolve(true);
         });
     });
-  }
-}
   }
 }

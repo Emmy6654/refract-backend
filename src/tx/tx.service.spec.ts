@@ -11,6 +11,7 @@ import {
   rpc,
 } from "@stellar/stellar-sdk";
 import { AppConfig } from "../config/configuration";
+import { testStellarConfig } from "../config/test-stellar";
 import { PolicyService } from "../policy/policy.service";
 import { TxService } from "./tx.service";
 
@@ -27,16 +28,10 @@ const CONFIRMATION: AppConfig["confirmation"] = {
 };
 
 function buildConfig(overrides: Partial<AppConfig["stellar"]> = {}): ConfigService<AppConfig, true> {
-  const stellar: AppConfig["stellar"] = {
-    network: "testnet",
-    sorobanRpcUrl: "https://soroban-testnet.stellar.org",
-    networkPassphrase: NETWORK_PASSPHRASE,
+  const stellar = testStellarConfig({
     poolContractId: StrKey.encodeContract(Buffer.alloc(32, 1)),
-    policyContractId: "",
-    oracleContractId: "",
-    relayerSecret: "",
     ...overrides,
-  };
+  });
   return {
     get: jest.fn((key: string) => {
       if (key === "stellar") return stellar;
