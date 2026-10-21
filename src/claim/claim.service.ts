@@ -5,65 +5,110 @@ import { OracleService } from "../oracle/oracle.service";
 import { PolicyService, StoredPolicy } from "../policy/policy.service";
 import { ClaimSettlementService } from "./claim-settlement.service";
 import { ClaimResult } from "./claim-result";
+import { ReconciliationService } from "./reconciliation.service";
 
-const STALENESS_LIMIT_SECONDS = 1800; // 30 minutes — matches the old ClaimProcessor
+const STALENESS_LIMIT_SECONDS = 1800;
 
-/**
- * ClaimService scans active policies for triggered conditions and settles
- * payouts. This is a migration of src/services/claimProcessor.ts, with one
- * deliberate fix: the old ClaimProcessor kept its own private
- * `Map<string, Policy>` that nothing ever populated (routes/policies.ts's
- * `POST /buy` never called `registerPolicy()`), so claim scanning never
- * actually saw a real policy. ClaimService now reads directly from
- * PolicyService, so a bought policy is immediately eligible for scanning.
- *
- * It also consolidates two previously-separate mocked "oracle" data
- * sources (OracleMonitor's websocket-feed checks vs. ClaimProcessor's own
- * private mockValues map, which used inconsistent units — e.g. MarketCrash
- * as a fraction here vs. a percentage there) into a single OracleService.
- */
+export interface ScanOutcome {
+  settled: ClaimResult[];
+  counts: {
+    scanned: number;
+    triggered: number;
+    settled: number;
+    deferred: number;
+    failedTransient: number;
+    failedPermanent: number;
+    failedIndeterminate: number;
+    deadLettered: number;
+  };
+}
+
+export interface DeadLetterEntry {
+  policyId: string;
+  holder: string;
+  failureCount: number;
+  lastError: string;
+  reason: string;
+  coverageType: number;
+}
+
 @Injectable()
 export class ClaimService {
   private readonly logger = new Logger(ClaimService.name);
   private processedCount = 0;
   private payoutTotal = BigInt(0);
-  // In-memory settlement history — same lifetime/limitations as
-  // PolicyService's in-memory store; replaced together once the
-  // Postgres-backed repository lands.
   private readonly history: ClaimResult[] = [];
+  private readonly deadLetterClaims: DeadLetterEntry[] = [];
+  private readonly failureCounts = new Map<string, number>();
+  private readonly deadLetterPolicyIds = new Set<string>();
+
+  private readonly oracleEventRepository?: OracleEventRepository;
+  private readonly reconciliationService?: ReconciliationService;
 
   constructor(
     private readonly policyService: PolicyService,
     private readonly oracleService: OracleService,
     private readonly claimSettlementService: ClaimSettlementService,
-    private readonly oracleEventRepository: OracleEventRepository
-  ) {}
+    oracleEventRepositoryOrReconciliation?: OracleEventRepository | ReconciliationService,
+    reconciliationService?: ReconciliationService
+  ) {
+    if (oracleEventRepositoryOrReconciliation && "record" in oracleEventRepositoryOrReconciliation) {
+      this.oracleEventRepository = oracleEventRepositoryOrReconciliation as OracleEventRepository;
+    }
+    if (oracleEventRepositoryOrReconciliation && "recordFailedSettlement" in oracleEventRepositoryOrReconciliation) {
+      this.reconciliationService = oracleEventRepositoryOrReconciliation as ReconciliationService;
+    }
+    if (reconciliationService) {
+      this.reconciliationService = reconciliationService;
+    }
+  }
 
   async processTriggered(): Promise<ClaimResult[]> {
-    const activePolicies = this.policyService.listActive();
-    const settled: ClaimResult[] = [];
-    if (activePolicies.length === 0) return settled;
+    return (await this.processTriggeredWithStats()).settled;
+  }
 
-    this.logger.log(`Scanning ${activePolicies.length} active polic${activePolicies.length === 1 ? "y" : "ies"}`);
+  async settleClaims(): Promise<ClaimResult[]> {
+    return this.processTriggered();
+  }
+
+  async processTriggeredWithStats(): Promise<ScanOutcome> {
+    const activePolicies = this.policyService.listActive().filter((policy) => !this.deadLetterPolicyIds.has(policy.id));
+    const settled: ClaimResult[] = [];
+    const counts = {
+      scanned: activePolicies.length,
+      triggered: 0,
+      settled: 0,
+      deferred: 0,
+      failedTransient: 0,
+      failedPermanent: 0,
+      failedIndeterminate: 0,
+      deadLettered: 0,
+    };
 
     for (const policy of activePolicies) {
       try {
         const fetchedAt = Math.floor(Date.now() / 1000);
         const oracle = await this.fetchOracleData(policy);
         const result = this.evaluatePolicy(policy, oracle, fetchedAt);
-        if (result.triggered) {
-          // Only counted/deactivated once the on-chain payout actually
-          // confirms — a failed or unconfirmed settlement leaves the
-          // policy active so the next scheduled scan retries it.
-          const settledResult = await this.processPayout(policy, result);
-          if (settledResult) settled.push(settledResult);
+        if (!result.triggered) continue;
+
+        counts.triggered += 1;
+        const settledResult = await this.processPayout(policy, result);
+        if (settledResult) {
+          settled.push(settledResult);
+          counts.settled += 1;
+        } else {
+          counts.deferred += 1;
+          counts.failedTransient += 1;
         }
       } catch (err) {
+        counts.failedIndeterminate += 1;
         this.logger.error(`Error scanning policy ${policy.id}`, err instanceof Error ? err.stack : String(err));
       }
     }
 
-    return settled;
+    counts.deadLettered = this.deadLetterClaims.length;
+    return { settled, counts };
   }
 
   private async fetchOracleData(policy: StoredPolicy): Promise<OracleReading> {
@@ -92,10 +137,7 @@ export class ClaimService {
         throw new Error(`Unknown coverageType ${policy.coverageType}`);
     }
 
-    // Persist every claim-evaluation reading — fire-and-forget so a DB
-    // hiccup never disrupts the evaluation path.
-    void this.oracleEventRepository.record(reading);
-
+    void this.oracleEventRepository?.record(reading);
     return reading;
   }
 
@@ -107,10 +149,10 @@ export class ClaimService {
 
     let triggered: boolean;
     switch (policy.coverageType) {
-      case 4: // FlightDelay: triggers when the delay exceeds the threshold
+      case 4:
         triggered = oracle.value > oracle.threshold;
         break;
-      default: // StablecoinDepeg, MarketCrash, LiquidationShield, SmartContractRisk: trigger below threshold
+      default:
         triggered = oracle.value < oracle.threshold;
     }
 
@@ -129,25 +171,42 @@ export class ClaimService {
     };
   }
 
-  /** Returns the settled ClaimResult, or undefined if settlement didn't confirm. */
   private async processPayout(policy: StoredPolicy, result: ClaimResult): Promise<ClaimResult | undefined> {
     this.logger.warn(
       `PAYOUT triggered: policy=${policy.id} holder=${policy.holder} payout=${result.payout} reason="${result.reason}"`
     );
 
-    const settlement = await this.claimSettlementService.settleClaim(policy.id, policy.holder, BigInt(result.payout));
+    const settlement = await this.claimSettlementService.settleClaim(policy.id);
     if (!settlement.settled) {
-      this.logger.error(`Settlement did not confirm for policy ${policy.id}, will retry next scan: ${settlement.error}`);
+      const count = (this.failureCounts.get(policy.id) ?? 0) + 1;
+      this.failureCounts.set(policy.id, count);
+      this.reconciliationService?.recordFailedSettlement(policy.id);
+
+      if (count >= 3) {
+        this.deadLetterClaims.push({
+          policyId: policy.id,
+          holder: policy.holder,
+          failureCount: count,
+          lastError: settlement.error ?? "settlement failed",
+          reason: result.reason,
+          coverageType: policy.coverageType,
+        });
+        this.deadLetterPolicyIds.add(policy.id);
+        this.failureCounts.delete(policy.id);
+      }
       return undefined;
     }
 
-    this.logger.log(`Settlement confirmed for policy ${policy.id}: tx=${settlement.txHash}`);
     this.policyService.deactivate(policy.id);
-    this.processedCount++;
+    this.processedCount += 1;
     this.payoutTotal += BigInt(result.payout);
     const settledResult = { ...result, settlementTxHash: settlement.txHash };
     this.history.push(settledResult);
     return settledResult;
+  }
+
+  getDeadLetterClaims(): DeadLetterEntry[] {
+    return [...this.deadLetterClaims];
   }
 
   getStats() {
@@ -155,20 +214,16 @@ export class ClaimService {
       activePolicies: this.policyService.listActive().length,
       processedClaims: this.processedCount,
       totalPayout: this.payoutTotal.toString(),
-      // Surfaces whether ClaimSettlementService actually has a pool
-      // contract ID + relayer secret configured, so ops can tell from the
-      // API whether triggered claims will settle on-chain or just log a
-      // "not configured" error, without digging through env/logs.
       settlementConfigured: this.claimSettlementService.isConfigured(),
+      deadLetterClaims: this.deadLetterClaims.length,
+      settlementRetries: [...this.failureCounts.values()].reduce((sum, value) => sum + value, 0),
     };
   }
 
-  /** Settled claim history for a holder, most recent first. */
   getHistoryForHolder(address: string): ClaimResult[] {
     return this.history.filter((claim) => claim.holder === address).sort((a, b) => b.processedAt - a.processedAt);
   }
 
-  /** Most recent settled claims across all holders, for public "recent activity" displays. */
   getRecentSettlements(limit = 10): ClaimResult[] {
     return [...this.history].sort((a, b) => b.processedAt - a.processedAt).slice(0, limit);
   }
