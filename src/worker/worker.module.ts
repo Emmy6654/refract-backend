@@ -13,11 +13,12 @@ import { OracleModule } from "../oracle/oracle.module";
 import { ReadingBusModule } from "../oracle/reading-bus.module";
 import { PolicyModule } from "../policy/policy.module";
 import { StellarModule } from "../stellar/stellar.module";
+import { RelayerMonitorModule } from "../stellar/relayer-monitor/relayer-monitor.module";
 import { RuntimeModule } from "../runtime/runtime.module";
 
 /**
  * Root module for the worker tier: oracle polling, consensus evaluation,
- * on-chain publishing and claim settlement.
+ * on-chain publishing, claim settlement and relayer balance monitoring.
  *
  * It shares the data layer with the API but leaves out everything that
  * serves requests — controllers are never bound (the worker is started as
@@ -41,6 +42,7 @@ import { RuntimeModule } from "../runtime/runtime.module";
     PolicyModule,
     OracleModule,
     ClaimModule,
+    RelayerMonitorModule,
   ],
 })
 export class WorkerModule {}
