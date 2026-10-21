@@ -1,11 +1,16 @@
-import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, OnModuleDestroy, Optional } from '@nestjs/common';
 import { SchedulerRegistry } from '@nestjs/schedule';
 import { CronJob } from 'cron';
 import { OracleService } from './oracle.service';
 import { ProtocolParametersService } from '../parameters/protocol-parameters.service';
 import { ProtocolParameterKey } from '../parameters/protocol-parameter-key.enum';
+import { ReadingBus } from './reading-bus';
+import { OracleReading } from './oracle-reading';
+import { runsPipeline } from '../runtime/process-role';
+import { PipelineHeartbeat } from '../runtime/pipeline-heartbeat';
 
 const ORACLE_REFRESH_JOB_NAME = 'oracle-refresh';
+export const ORACLE_PIPELINE_STAGE = 'oracle';
 
 @Injectable()
 export class OracleScheduler implements OnModuleInit, OnModuleDestroy {
@@ -15,9 +20,19 @@ export class OracleScheduler implements OnModuleInit, OnModuleDestroy {
     private readonly oracleService: OracleService,
     private readonly schedulerRegistry: SchedulerRegistry,
     private readonly protocolParameters: ProtocolParametersService,
+    private readonly readingBus: ReadingBus,
+    @Optional() private readonly heartbeat?: PipelineHeartbeat,
   ) {}
 
   async onModuleInit(): Promise<void> {
+    // Polling and consensus belong to the worker tier. The API only relays
+    // what the worker publishes (see OracleFeedRelay).
+    if (!runsPipeline()) {
+      this.logger.log('Oracle polling disabled in this process (PROCESS_ROLE=api)');
+      return;
+    }
+    this.heartbeat?.expect(ORACLE_PIPELINE_STAGE);
+
     const intervalSeconds = await this.protocolParameters.getNumber(
       ProtocolParameterKey.ORACLE_SCHEDULER_INTERVAL_SECONDS,
     );
@@ -42,7 +57,11 @@ export class OracleScheduler implements OnModuleInit, OnModuleDestroy {
 
   private async refresh(): Promise<void> {
     try {
-      await this.oracleService.refreshPrices();
+      const result: unknown = await this.oracleService.refreshPrices();
+      const readings = Array.isArray(result) ? (result as OracleReading[]) : [];
+      // Hand readings to the API tier for the WebSocket feed and reads.
+      await this.readingBus.publishAll(readings);
+      this.heartbeat?.beat(ORACLE_PIPELINE_STAGE);
     } catch (error) {
       this.logger.error('Oracle refresh failed', error as Error);
     }

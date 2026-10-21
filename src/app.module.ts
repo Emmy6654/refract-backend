@@ -16,8 +16,6 @@ import { ClaimModule } from './claim/claim.module';
 import { DbModule } from './db/db.module';
 import { IdempotencyModule } from './common/idempotency.module';
 import { HealthModule } from './health/health.module';
-import { SecurityReportsModule } from './security-reports/security-reports.module';
-import { DigestModule } from './digest/diges
 import { PolicyModule } from './policy/policy.module';
 import { PoolModule } from './pool/pool.module';
 import { QuoteModule } from './quote/quote.module';
@@ -27,6 +25,8 @@ import { AuthModule } from './auth/auth.module';
 import { ApiKeyGuard } from './auth/api-key.guard';
 import { SecurityReportsModule } from './security-reports/security-reports.module';
 import { DigestModule } from './digest/digest.module';
+import { ReadingBusModule } from './oracle/reading-bus.module';
+import { OracleFeedModule } from './oracle/oracle-feed.module';
 
 /**
  * Sandbox mode lets the full API run with zero external dependencies
@@ -84,21 +84,6 @@ export const isSandboxMode = (): boolean =>
           }),
         ]),
     DatabaseModule,
-    Ide
-    ScheduleModule.forRoot(),
-    // In sandbox mode we skip the real Postgres connection entirely so
-    // `npm run dev` works right after `npm install` with no other setup.
-    ...(isSandboxMode()
-      ? []
-      : [
-          TypeOrmModule.forRootAsync({
-            imports: [DatabaseModule],
-            inject: [DatabaseModule],
-            useFactory: (databaseModule: DatabaseModule) =>
-              databaseModule.getTypeOrmConfig(),
-          }),
-        ]),
-    DatabaseModule,
     IdempotencyModule,
     // CacheModule is @Global — imported once here, available everywhere.
     CacheModule,
@@ -112,6 +97,9 @@ export const isSandboxMode = (): boolean =>
     RedisModule,
     ClaimsModule,
     OracleModule,
+    // Read side of the oracle: relays readings the worker publishes.
+    ReadingBusModule,
+    OracleFeedModule,
     ClaimModule,
     TxModule,
     SecurityReportsModule,

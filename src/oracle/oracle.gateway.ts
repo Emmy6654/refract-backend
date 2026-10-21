@@ -1,12 +1,12 @@
 import {
   OnGatewayConnection,
   OnGatewayDisconnect,
-  OnModuleDestroy,
   WebSocketGateway,
   WebSocketServer,
 } from '@nestjs/websockets';
-import { Logger } from '@nestjs/common';
+import { Logger, OnModuleDestroy } from '@nestjs/common';
 import { Server, WebSocket } from 'ws';
+import { OracleReading } from './oracle-reading';
 
 @WebSocketGateway({ path: '/oracle' })
 export class OracleGateway
@@ -15,16 +15,46 @@ export class OracleGateway
   private readonly logger = new Logger(OracleGateway.name);
 
   @WebSocketServer()
-  server: Server;
+  server!: Server;
 
   handleConnection(client: WebSocket): void {
     this.logger.log('Oracle WebSocket client connected');
-    client.on('error', (err) => {
-      this.logger.warn(`Oracle WebSocket client error: ${err.message}`);
-    });
+    if (typeof client.on === 'function') {
+      client.on('error', (err) => {
+        this.logger.warn(`Oracle WebSocket client error: ${err.message}`);
+      });
+    }
+    client.send(JSON.stringify({ type: 'connected', message: 'Refract oracle feed' }));
   }
 
-  handleDisconnect(client: WebSocket): void {
+  /**
+   * Push a reading to every open client. In a split deployment the readings
+   * come from the worker via the ReadingBus (see OracleFeedRelay); this
+   * process never polls upstreams itself.
+   */
+  broadcastAlert(alert: OracleReading): void {
+    if (!this.server?.clients) {
+      return;
+    }
+    const payload = JSON.stringify({ ...alert, timestamp: Date.now() });
+    let sent = 0;
+    for (const client of this.server.clients) {
+      if (client.readyState !== WebSocket.OPEN) continue;
+      // send() can throw for a socket that is mid-close; one bad client must
+      // not stop the broadcast to everyone else.
+      try {
+        client.send(payload);
+        sent++;
+      } catch (err) {
+        this.logger.warn(
+          `Failed to send oracle alert to a client: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    this.logger.debug(`Broadcast ${alert.coverageType} alert to ${sent} client(s)`);
+  }
+
+  handleDisconnect(_client: WebSocket): void {
     this.logger.log('Oracle WebSocket client disconnected');
   }
 
