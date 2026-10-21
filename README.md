@@ -78,6 +78,8 @@ remain in Docker volumes; `docker compose down -v` removes them.
 | `npm start` | Run the compiled server |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run lint` | ESLint over `src/` |
+| `npm test` | Jest unit tests (includes property-based tests) |
+| `npm run test:property` | Only the property-based / fuzz suites (`*.property.spec.ts`); set `FC_NUM_RUNS=20000` for a deeper soak, `FC_SEED=<seed>` to replay a failure |
 
 ## API surface
 
