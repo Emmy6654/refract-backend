@@ -276,7 +276,22 @@ export class PolicyService {
    * calls set_pool_config() — which the catalog alone can't see.
    */
   async onChainCoverageBounds(): Promise<{ minCoverage: bigint; maxCoverage: bigint } | null> {
-    if (!this.poolCo
+    if (!this.poolContractId) {
+      return null;
+    }
+    try {
+      // pool_config() is a stateless view with no caller-specific args, so
+      // the source account only needs to be well-formed for the tx
+      // envelope — it never touches the network, unlike getAccount().
+      const dummySource = new Account(Keypair.random().publicKey(), "0");
+      const contract = new Contract(this.poolContractId);
+      const tx = new TransactionBuilder(dummySource, {
+        fee: BASE_FEE,
+        networkPassphrase: this.networkPassphrase,
+      })
+        .addOperation(contract.call("pool_config"))
+        .setTimeout(30)
+        .build();
 
       const sim = await this.metricsService.observeSorobanRpc("simulate_transaction", () =>
         this.server.simulateTransaction(tx)
