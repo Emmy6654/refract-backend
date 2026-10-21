@@ -1,3 +1,5 @@
+import type { ReadingProvenance } from "./oracle-encoding";
+
 export type Severity = "low" | "medium" | "high" | "triggered";
 
 export interface OracleReading {
@@ -12,4 +14,10 @@ export interface OracleReading {
    * OraclePublisherService must never publish degraded readings on-chain.
    */
   degraded?: boolean;
+  /**
+   * Consensus provenance (trust tier, agreeing source count, decision id,
+   * source timestamp). Present only for readings that reached consensus;
+   * published on-chain next to the value. Never set on degraded readings.
+   */
+  provenance?: ReadingProvenance;
 }
