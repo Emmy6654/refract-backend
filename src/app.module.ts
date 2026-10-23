@@ -28,6 +28,7 @@ import { AuthModule } from './auth/auth.module';
 import { ApiKeyGuard } from './auth/api-key.guard';
 import { SecurityReportsModule } from './security-reports/security-reports.module';
 import { DigestModule } from './digest/digest.module';
+import { FeedsModule } from './feeds/feeds.module';
 import { OperatorsModule } from './routes/operators';
 import { StakingModule } from './routes/staking';
 
@@ -121,6 +122,7 @@ export const isSandboxMode = (): boolean =>
     TxModule,
     SecurityReportsModule,
     DigestModule,
+    FeedsModule,
     OperatorsModule,
     StakingModule,
   ],

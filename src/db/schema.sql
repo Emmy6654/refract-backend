@@ -49,6 +49,18 @@ CREATE INDEX IF NOT EXISTS idx_claims_coverage_settled
 CREATE INDEX IF NOT EXISTS idx_claims_coverage_status
     ON claims (coverage_type, status);
 
+-- Versioned oracle feed definitions (issue #196). See migrations/004_oracle_feed_definitions.sql.
+CREATE TABLE IF NOT EXISTS oracle_feed_definitions (
+  feed_key            TEXT          NOT NULL,
+  version             INTEGER       NOT NULL CHECK (version >= 1),
+  definition          JSONB         NOT NULL,
+  previous_definition JSONB,
+  change_type         TEXT          NOT NULL CHECK (change_type IN ('create', 'update')),
+  changed_by          TEXT          NOT NULL,
+  changed_at          TIMESTAMPTZ   NOT NULL DEFAULT now(),
+  PRIMARY KEY (feed_key, version)
+);
+
 -- Per-source reliability state for oracle feeds. Updated in one batch per
 -- polling cycle; state transitions are computed by src/oracle/sourceHealth.ts.
 CREATE TABLE IF NOT EXISTS oracle_source_health (
