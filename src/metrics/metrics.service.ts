@@ -54,6 +54,11 @@ export class MetricsService {
     labelNames: ["coverage_type", "outcome"],
     registers: [this.registry],
   });
+  private readonly oracleLeader = new Gauge({
+    name: "refract_oracle_leader",
+    help: "1 when this instance holds the oracle leader lease, 0 when it is a follower.",
+    registers: [this.registry],
+  });
   private readonly oracleCheckDuration = new Histogram<"coverage_type">({
     name: "refract_oracle_check_duration_seconds",
     help: "Oracle check duration in seconds.",
@@ -181,6 +186,10 @@ export class MetricsService {
     this.oracleCheckDuration.labels({ coverage_type: coverageType }).observe(durationSeconds);
   }
 
+  setOracleLeader(isLeader: boolean): void {
+    this.oracleLeader.set(isLeader ? 1 : 0);
+  }
+
   recordOracleSourceRequest(source: string, outcome: Outcome, durationSeconds: number): void {
     this.oracleSourceRequestDuration.labels({ source, outcome }).observe(durationSeconds);
     if (outcome === "failure") this.oracleSourceFailures.labels({ source }).inc();
@@ -229,6 +238,7 @@ export class MetricsService {
 
   recordProviderSchemaDrift(source: string, kind: string): void {
     this.providerSchemaDrift.labels({ source, kind }).inc();
+  }
   }
 
   async observeSorobanRpc<T>(operation: string, call: () => Promise<T>): Promise<T> {
