@@ -9,6 +9,8 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { ClaimsModule } from './claims/claims.module';
 import { OracleModule } from './oracle/oracle.module';
+import { OracleBootstrapModule } from './oracle/bootstrap/oracle-bootstrap.module';
+import { OracleAdminModule } from './oracle/admin/oracle-admin.module';
 import { ConsensusModule } from './oracle/consensus/consensus.module';
 import { DatabaseModule } from './database/database.module';
 import { RedisModule } from './redis/redis.module';
@@ -113,6 +115,8 @@ export const isSandboxMode = (): boolean =>
     // Global: per-adapter endpoint lists with health-based failover.
     ProviderEndpointsModule,
     OracleModule,
+    OracleBootstrapModule,
+    OracleAdminModule,
     ConsensusModule,
     ClaimModule,
     TxModule,
