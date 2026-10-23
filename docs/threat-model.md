@@ -110,6 +110,15 @@ reassessed against deployment exposure and on-chain contract controls.
   boot. `ALLOW_MOCKED_COVERAGE_SOURCES=true` waives this outside mainnet only.
   Secondary price (Kraken) and TVL (Token Terminal) providers are documented in
   [`oracle-sources.md`](./oracle-sources.md).
+  - *Trust-mode status (per coverage, `ORACLE_TRUST_MODE_<COVERAGE>`):*
+    - `single_source` (default): satisfied only by the existing pause
+      fallback; no independent corroboration.
+    - `corroborated`: config validated at startup and enforced in
+      `ClaimService` (fail closed). Not yet satisfiable: there is one reader
+      per coverage, so no payout can occur until multi-source readers exist.
+    - `decentralized`: config requires registered provider identities at
+      startup and enforces quorum (fail closed). Not satisfiable yet: no
+      third-party submission path exists.
   *Baseline (issue #206):* `src/oracle/independence-graph.ts` clusters sources
   that share an operator, upstream origin, or hosting ASN, and corroborates
   by independent cluster rather than by source count. It also flags identical
