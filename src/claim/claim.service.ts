@@ -12,7 +12,17 @@ import { OracleService } from "../oracle/oracle.service";
 import { PolicyService, StoredPolicy } from "../policy/policy.service";
 import { ClaimSettlementService } from "./claim-settlement.service";
 import { ClaimResult } from "./claim-result";
+import type { FeedTrustState } from "../oracle/regions/region-quorum";
+import { AdjudicationOutcome, AdjudicationRecord, feedIdForPolicy } from "./reevaluation/adjudication";
+import {
+  TriggerDirection,
+  TriggerStabilityEvaluator,
+  defaultTriggerConfig,
+  triggerOverridesFromEnv,
+} from "./trigger/trigger-stability";
 import { authorizeSettlement, SettlementAuthorization } from "./settlement-authorization";
+
+const STALENESS_LIMIT_SECONDS = 1800; // 30 minutes — matches the old ClaimProcessor
 
 /**
  * ClaimService scans active policies and settles payouts.
@@ -25,6 +35,10 @@ import { authorizeSettlement, SettlementAuthorization } from "./settlement-autho
  * Anything else (insufficient, conflicted, unrecorded, or a coverage type
  * with no live source) leaves the policy active and unpaid.
  */
+/** Returns a feed's current trust state, or null when cross-region quorum isn't configured. */
+export type FeedTrustGate = (feedId: string) => FeedTrustState | null;
+export type AdjudicationListener = (record: AdjudicationRecord) => void;
+
 @Injectable()
 export class ClaimService {
   private readonly logger = new Logger(ClaimService.name);
@@ -32,6 +46,19 @@ export class ClaimService {
   private payoutTotal = BigInt(0);
   // In-memory settlement history; replaced once the Postgres-backed repository lands.
   private readonly history: ClaimResult[] = [];
+  // Debounces each policy's threshold check (hysteresis, minimum dwell,
+  // flap damping) so a value hovering around the threshold can't toggle
+  // the coverage condition on every scan. Keyed by policy id.
+  private readonly triggerOverrides = triggerOverridesFromEnv(process.env);
+  private readonly policyCoverageTypes = new Map<string, number>();
+  private trustGate?: FeedTrustGate;
+  // Set CLAIM_HOLD_ON_UNTRUSTED_FEED=false to settle (and record for later
+  // re-adjudication) instead of holding, e.g. while rolling out regional quorum.
+  private readonly holdOnUntrustedFeed = process.env.CLAIM_HOLD_ON_UNTRUSTED_FEED !== "false";
+  private readonly adjudicationListeners: AdjudicationListener[] = [];
+  private readonly triggerEvaluator = new TriggerStabilityEvaluator((policyId) =>
+    defaultTriggerConfig(this.policyCoverageTypes.get(policyId) ?? -1, this.triggerOverrides)
+  );
 
   constructor(
     private readonly policyService: PolicyService,
@@ -44,7 +71,17 @@ export class ClaimService {
     // Optional so existing wiring/tests without the consensus layer keep
     // today's behaviour: no gate, settle directly.
     @Optional() private readonly claimHoldService?: ClaimHoldService
-  ) {}
+  ) {
+    this.triggerEvaluator.onTransition((e) => {
+      const line =
+        `Trigger ${e.kind} policy=${e.key} ${e.from} -> ${e.to} value=${e.evidence.value} ` +
+        `threshold=${e.evidence.threshold} band=${e.evidence.hysteresis} penalty=${Math.round(e.evidence.penalty)} ` +
+        `flips=${e.evidence.flips}: ${e.evidence.reason}`;
+      // Suppressed changes are an alerting signal (a feed sitting on a payout boundary), not routine.
+      if (e.kind === "suppressed") this.logger.warn(line);
+      else this.logger.log(line);
+    });
+  }
 
   /** Scheduler entry point. */
   async settleClaims(): Promise<ClaimResult[]> {
@@ -83,6 +120,9 @@ export class ClaimService {
         }
 
         const result = this.evaluatePolicy(policy, oracle, fetchedAt);
+        const feedId = feedIdForPolicy(policy.coverageType, policy.triggerParams);
+        const trust = this.trustGate?.(feedId) ?? null;
+        const untrusted = trust !== null && trust !== "trusted";
         if (result.triggered) {
           // Operator pause: the reading was already polled and logged above, but
           // no payout is attempted. Checked per policy so a pause issued mid-scan
@@ -91,11 +131,22 @@ export class ClaimService {
             this.logger.warn(`Settlement skipped for policy ${policy.id}: oracle paused by operator`);
             continue;
           }
+          if (untrusted && this.holdOnUntrustedFeed) {
+            // Don't pay out on a reading the regions haven't corroborated.
+            // The hold is recorded and re-adjudicated once trust is restored.
+            this.logger.warn(`Holding payout for policy ${policy.id}: feed ${feedId} is ${trust}`);
+            this.emitAdjudication(policy, oracle, feedId, trust, "held", fetchedAt, "0");
+          } else {
           // Only counted/deactivated once the on-chain payout actually
           // confirms — a failed or unconfirmed settlement leaves the
           // policy active so the next scheduled scan retries it.
           const settledResult = await this.processPayout(policy, result, oracle.coverageType);
           if (settledResult) settled.push(settledResult);
+          if (settledResult && untrusted) {
+            this.emitAdjudication(policy, oracle, feedId, trust, "settled", fetchedAt, settledResult.payout, settledResult.settlementTxHash);
+          }
+        } else if (untrusted) {
+          this.emitAdjudication(policy, oracle, feedId, trust, "skipped", fetchedAt, "0");
         }
         }
         const result = await this.processPayout(policy, outcome.authorization);
@@ -106,6 +157,75 @@ export class ClaimService {
     }
 
     return settled;
+  }
+
+  /** Supplies feed trust (from the regional quorum). Without one, every feed is treated as trusted. */
+  setTrustGate(gate: FeedTrustGate): void {
+    this.trustGate = gate;
+  }
+
+  /** Notified of every decision made while a policy's feed wasn't trusted. */
+  onAdjudication(listener: AdjudicationListener): void {
+    this.adjudicationListeners.push(listener);
+  }
+
+  /**
+   * Pays a claim that a re-evaluation run found was wrongly held or skipped.
+   * Same settlement path and bookkeeping as a live trigger.
+   */
+  async settleFromReevaluation(
+    policy: Pick<StoredPolicy, "id" | "holder" | "coverageType" | "coverageAmount">,
+    runId: string,
+  ): Promise<{ settled: boolean; txHash?: string; error?: string }> {
+    const result: ClaimResult = {
+      policyId: policy.id,
+      holder: policy.holder,
+      coverageType: policy.coverageType,
+      triggered: true,
+      payout: policy.coverageAmount,
+      reason: `Re-adjudicated by ${runId} after feed trust was restored`,
+      processedAt: Date.now(),
+    };
+    const settled = await this.processPayout(policy as StoredPolicy, result);
+    return settled ? { settled: true, txHash: settled.settlementTxHash } : { settled: false, error: "settlement did not confirm" };
+  }
+
+  private emitAdjudication(
+    policy: StoredPolicy,
+    oracle: OracleReading,
+    feedId: string,
+    trust: FeedTrustState,
+    outcome: AdjudicationOutcome,
+    decidedAtSeconds: number,
+    paid: string,
+    settlementTxHash?: string,
+  ): void {
+    if (this.adjudicationListeners.length === 0) return;
+    const decidedAt = decidedAtSeconds * 1000;
+    const record: AdjudicationRecord = {
+      id: `${policy.id}:${decidedAt}`,
+      policyId: policy.id,
+      holder: policy.holder,
+      coverageType: policy.coverageType,
+      feedId,
+      outcome,
+      trustState: trust,
+      decidedAt,
+      readingValue: oracle.value,
+      threshold: oracle.threshold,
+      direction: policy.coverageType === 4 ? "above" : "below",
+      coverageAmount: policy.coverageAmount,
+      paid,
+      expiresAt: policy.expiresAt * 1000,
+      ...(settlementTxHash ? { settlementTxHash } : {}),
+    };
+    for (const l of this.adjudicationListeners) {
+      try {
+        l(record);
+      } catch (err) {
+        this.logger.error(`Adjudication listener failed for policy ${policy.id}`, err instanceof Error ? err.stack : String(err));
+      }
+    }
   }
 
   private async fetchOracleData(policy: StoredPolicy): Promise<OracleReading> {
@@ -147,16 +267,22 @@ export class ClaimService {
       return this.buildResult(policy, false, `Oracle data stale (${staleness}s old)`);
     }
 
-    let triggered: boolean;
-    switch (policy.coverageType) {
-      case 4: // FlightDelay: triggers when the delay exceeds the threshold
-        triggered = oracle.value > oracle.threshold;
-        break;
-      default: // StablecoinDepeg, MarketCrash, LiquidationShield, SmartContractRisk: trigger below threshold
-        triggered = oracle.value < oracle.threshold;
-    }
+    // FlightDelay triggers when the delay exceeds the threshold; every other
+    // coverage type triggers below it.
+    const direction: TriggerDirection = policy.coverageType === 4 ? "above" : "below";
+    this.policyCoverageTypes.set(policy.id, policy.coverageType);
+    const decision = this.triggerEvaluator.evaluate(policy.id, {
+      value: oracle.value,
+      threshold: oracle.threshold,
+      direction,
+      observedAt: fetchedAt * 1000,
+    });
 
-    return this.buildResult(policy, triggered, oracle.message);
+    const result = this.buildResult(policy, decision.triggered, `${oracle.message} [trigger: ${decision.reason}]`);
+    if (decision.triggered && decision.confirmedAt !== null) {
+      result.triggerDetectedAt = decision.confirmedAt;
+    }
+    return result;
   }
 
   private buildResult(policy: StoredPolicy, triggered: boolean, reason: string): ClaimResult {
@@ -233,6 +359,8 @@ export class ClaimService {
     this.logger.log(`Settlement confirmed for policy ${policy.id}: tx=${settlement.txHash}`);
     if (holdId) this.claimHoldService?.markSettled(holdId);
     this.policyService.deactivate(policy.id);
+    this.triggerEvaluator.forget(policy.id);
+    this.policyCoverageTypes.delete(policy.id);
     this.processedCount++;
     this.payoutTotal += auth.payout;
     const result: ClaimResult = {

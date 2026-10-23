@@ -27,6 +27,9 @@ import { AuthModule } from './auth/auth.module';
 import { ApiKeyGuard } from './auth/api-key.guard';
 import { SecurityReportsModule } from './security-reports/security-reports.module';
 import { DigestModule } from './digest/digest.module';
+import { OracleIngestionModule } from './oracle/sources/oracle-ingestion.module';
+import { OracleRegionsModule } from './oracle/regions/oracle-regions.module';
+import { ReevaluationModule } from './claim/reevaluation/reevaluation.module';
 import { OraclePipelineModule } from './oracle/shutdown/oracle-pipeline.module';
 import { ProviderEndpointsModule } from './oracle/endpoints/provider-endpoints.module';
 import { OracleSandboxModule } from './oracle/sandbox/oracle-sandbox.module';
@@ -115,6 +118,9 @@ export const isSandboxMode = (): boolean =>
     TxModule,
     SecurityReportsModule,
     DigestModule,
+    OracleIngestionModule,
+    OracleRegionsModule,
+    ReevaluationModule,
     FeedsModule,
     OperatorsModule,
     StakingModule,
