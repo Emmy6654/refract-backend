@@ -9,6 +9,7 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { ClaimsModule } from './claims/claims.module';
 import { OracleModule } from './oracle/oracle.module';
+import { ConsensusModule } from './oracle/consensus/consensus.module';
 import { DatabaseModule } from './database/database.module';
 import { RedisModule } from './redis/redis.module';
 import { CacheModule } from './cache/cache.module';
@@ -17,8 +18,6 @@ import { ClaimModule } from './claim/claim.module';
 import { DbModule } from './db/db.module';
 import { IdempotencyModule } from './common/idempotency.module';
 import { HealthModule } from './health/health.module';
-import { SecurityReportsModule } from './security-reports/security-reports.module';
-import { DigestModule } from './digest/diges
 import { PolicyModule } from './policy/policy.module';
 import { PoolModule } from './pool/pool.module';
 import { QuoteModule } from './quote/quote.module';
@@ -92,21 +91,6 @@ export const isSandboxMode = (): boolean =>
           }),
         ]),
     DatabaseModule,
-    Ide
-    ScheduleModule.forRoot(),
-    // In sandbox mode we skip the real Postgres connection entirely so
-    // `npm run dev` works right after `npm install` with no other setup.
-    ...(isSandboxMode()
-      ? []
-      : [
-          TypeOrmModule.forRootAsync({
-            imports: [DatabaseModule],
-            inject: [DatabaseModule],
-            useFactory: (databaseModule: DatabaseModule) =>
-              databaseModule.getTypeOrmConfig(),
-          }),
-        ]),
-    DatabaseModule,
     IdempotencyModule,
     // CacheModule is @Global — imported once here, available everywhere.
     CacheModule,
@@ -126,6 +110,7 @@ export const isSandboxMode = (): boolean =>
     // Global: per-adapter endpoint lists with health-based failover.
     ProviderEndpointsModule,
     OracleModule,
+    ConsensusModule,
     ClaimModule,
     TxModule,
     SecurityReportsModule,

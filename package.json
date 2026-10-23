@@ -5,10 +5,12 @@
   "description": "Refract Protocol backend — oracle monitoring, claim processing, premium quoting",
   "main": "dist/main.js",
   "scripts": {
+    "build": "nest build",
+    "start": "nest start",
+    "start:dev": "nest start --watch",
+    "start:prod": "node dist/main.js",
     "dev": "nodemon --exec ts-node src/main.ts",
-    "build": "tsc",
-    "typecheck": "tsc --noEmit",
-    "start": "node dist/main.js",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint \"src/**/*.ts\"",
     "test": "jest",
     "migrate:up": "node-pg-migrate up --migrations-dir migrations --config-file database.json",
@@ -16,13 +18,21 @@
     "migrate:create": "node-pg-migrate create --migrations-dir migrations --config-file database.json",
     "migrate:status": "node-pg-migrate status --migrations-dir migrations --config-file database.json",
     "simulate:oracle": "ts-node scripts/simulate-oracle-parameters.ts",
-    "test:integration": "jest --config test/integration/jest.integration.config.ts --runInBand"
+    "test:integration": "jest --config test/integration/jest.integration.config.ts --runInBand",
+    "regenerate:xdr-fixtures": "ts-node scripts/regenerate-xdr-fixtures.ts",
+    "oracle:ops": "ts-node scripts/oracle-ops.ts"
   },
   "jest": {
     "preset": "ts-jest",
     "testEnvironment": "node",
     "rootDir": "src",
-    "testRegex": ".*\\.spec\\.ts$"
+    "testRegex": ".*\\.spec\\.ts$",
+    "moduleFileExtensions": ["js", "json", "ts"],
+    "transform": {
+      "^.+\\.(t|j)s$": "ts-jest"
+    },
+    "collectCoverageFrom": ["**/*.(t|j)s"],
+    "coverageDirectory": "../coverage"
   },
   "dependencies": {
     "@aws-sdk/client-secrets-manager": "^3.1142.0",

@@ -181,6 +181,27 @@ export class MetricsService {
     this.schedulerDuration.labels({ scheduler }).observe(durationSeconds);
   }
 
+  private readonly suspectedMirrorPairs = new Gauge<"feed">({
+    name: "refract_oracle_suspected_mirror_pairs",
+    help: "Source pairs currently under an independence penalty for suspected mirroring, per feed.",
+    labelNames: ["feed"],
+    registers: [this.registry],
+  });
+  private readonly mirrorPenaltyChanges = new Counter<"feed" | "action">({
+    name: "refract_oracle_mirror_penalty_changes_total",
+    help: "Independence penalties applied or cleared by mirror detection.",
+    labelNames: ["feed", "action"],
+    registers: [this.registry],
+  });
+
+  recordSuspectedMirrorPairs(feed: string, pairs: number): void {
+    this.suspectedMirrorPairs.labels({ feed }).set(pairs);
+  }
+
+  recordMirrorPenaltyChange(feed: string, action: "applied" | "cleared"): void {
+    this.mirrorPenaltyChanges.labels({ feed, action }).inc();
+  }
+
   recordOracleCheck(coverageType: string, outcome: OracleOutcome, durationSeconds: number): void {
     this.oracleChecks.labels({ coverage_type: coverageType, outcome }).inc();
     this.oracleCheckDuration.labels({ coverage_type: coverageType }).observe(durationSeconds);
