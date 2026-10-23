@@ -7,6 +7,8 @@ import { OracleControlService, PAUSE_SCOPES } from "./control";
 import { OracleStatusService } from "./oracle-status.service";
 import { PageQueryDto } from "../common/pagination";
 import { FEED_KEYS } from "../common/oracle-status.schemas";
+import { OracleReading } from "./oracle-reading";
+import { OracleService } from "./oracle.service";
 
 const CACHE_CONTROL = "public, max-age=15";
 
@@ -74,6 +76,18 @@ const summaryProps = {
 /**
  * Public, read-only oracle trust status. Exposes no keys, operator metadata or
  * raw provider payloads; evidence is referenced by id only.
+ *
+ * Also exposes the same "real" oracle checks (CoinGecko, Horizon, DeFiLlama —
+ * see OracleService.checkAll()) that OracleScheduler polls every 60s and
+ * broadcasts over the WebSocket feed, but as a plain REST GET. Before this,
+ * a client had to open a WebSocket connection and wait for the next
+ * above-"low" broadcast to see any oracle data at all — there was no way
+ * to just ask "what's the current reading right now."
+ *
+ * checkAll() is now backed by a 55-second Redis cache so repeated HTTP
+ * calls within a scheduler cycle do not issue duplicate CoinGecko /
+ * DeFiLlama requests.  The `cached` field in the response body tells
+ * callers whether the data came from cache or a fresh upstream call.
  */
 @ApiTags("oracle")
 @Controller("api/v1/oracle")
@@ -81,6 +95,7 @@ export class OracleController {
   constructor(
     private readonly status: OracleStatusService,
     private readonly oracleControl: OracleControlService,
+    private readonly oracleService: OracleService,
   ) {}
 
   @Get("feeds")
@@ -169,6 +184,13 @@ export class OracleController {
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   status() {
     return this.oracleControl.getStatus();
+  }
+
+  @Get("readings")
+  @ApiOperation({ summary: "Read current oracle values" })
+  @ApiResponse({ status: 200, description: "Current oracle readings" })
+  async getStatus(): Promise<{ readings: OracleReading[] }> {
+    return { readings: await this.oracleService.checkAll() };
   }
 
   @Post("pause")
