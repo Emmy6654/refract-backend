@@ -1,20 +1,26 @@
 {
-    "testMatch": [
-      "**/tests/**/*.test.ts",
-      "**/src/**/*.test.ts"
-    ],
-    "testTimeout": 60000,
-    "rootDir": "src",
-    "testRegex": ".*\\.spec\\.ts$",
-    "moduleFileExtensions": ["js", "json", "ts"],
-    "transform": {
-      "^.+\\.(t|j)s$": "ts-jest"
-    },
-    "collectCoverageFrom": ["**/*.(t|j)s"],
-    "coverageDirectory": "../coverage"
+  "name": "refract",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Refract oracle network monorepo",
+  "workspaces": [
+    "refract-backend",
+    "refract-frontend",
+    "refract-contracts"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test:unit && npm run test:contracts",
+    "test:unit": "npm run test --workspaces --if-present",
+    "test:contracts": "node test/contracts/verify.js",
+    "test:contracts:update": "node test/contracts/verify.js --update",
+    "attack-cost": "node scripts/attack-cost.js",
+    "attack-cost:reference": "node scripts/attack-cost.js --fixture test/fixtures/attack-cost/reference.json",
+    "lint": "npm run lint --workspaces --if-present",
+    "ci": "npm run lint && npm run test"
   },
-  "dependencies": {
-    "@aws-sdk/
+  "engines": {
+    "node": ">=18"
   },
   "jest": {
     "preset": "ts-jest",
