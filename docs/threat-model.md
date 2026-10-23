@@ -102,8 +102,11 @@ reassessed against deployment exposure and on-chain contract controls.
 - [ ] **P1 — Harden oracle decision inputs.** Validate schema, numeric range,
   timestamp/freshness, source identity and plausible movement; add independent
   corroboration or an operator pause for payout-triggering values. Replace
-  mocked trigger sources before offering those coverages as live. Secondary
-  price (Kraken) and TVL (Token Terminal) providers are documented in
+  mocked trigger sources before offering those coverages as live. Enforced at
+  startup by `src/common/coverage-source-guard.ts`: an enabled coverage type
+  backed by a mocked source, or below its declared minimum trust mode, aborts
+  boot. `ALLOW_MOCKED_COVERAGE_SOURCES=true` waives this outside mainnet only.
+  Secondary price (Kraken) and TVL (Token Terminal) providers are documented in
   [`oracle-sources.md`](./oracle-sources.md).
   *Baseline (issue #206):* `src/oracle/independence-graph.ts` clusters sources
   that share an operator, upstream origin, or hosting ASN, and corroborates
