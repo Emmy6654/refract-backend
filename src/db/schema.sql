@@ -49,6 +49,18 @@ CREATE INDEX IF NOT EXISTS idx_claims_coverage_settled
 CREATE INDEX IF NOT EXISTS idx_claims_coverage_status
     ON claims (coverage_type, status);
 
+-- Oracle evidence ledger (issue #176). Append-only guards (triggers) are
+-- installed by src/db/migrations/004_oracle_evidence.sql.
+CREATE TABLE IF NOT EXISTS oracle_evidence (
+    id               UUID           PRIMARY KEY,
+    source           VARCHAR(40)    NOT NULL,
+    coverage_type    TEXT           NOT NULL,
+    normalized_value NUMERIC(20, 6) NOT NULL,
+    raw_payload      TEXT           NOT NULL,
+    observed_at      TIMESTAMPTZ    NOT NULL,
+    ingested_at      TIMESTAMPTZ    NOT NULL DEFAULT NOW()
+);
+
 -- ─── Oracle node operator registry (issue #191) ─────────────────────────────
 -- The on-chain registry is the source of truth; this table is the Postgres
 -- cache of it plus the local audit trail.
@@ -312,4 +324,6 @@ CREATE TABLE IF NOT EXISTS oracle_source_health (
     CHECK (successes_window >= 0),
   CONSTRAINT chk_oracle_health_quarantine_reason
     CHECK (quarantined_at IS NULL OR quarantine_reason IS NOT NULL)
+);
+
 );

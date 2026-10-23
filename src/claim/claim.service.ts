@@ -1,4 +1,5 @@
 import { Injectable, Logger } from "@nestjs/common";
+import { EvidenceStore } from "../oracle/evidenceStore";
 import { OracleEventRepository } from "../oracle/oracle-event.repository";
 import { OracleReading } from "../oracle/oracle-reading";
 import { buildDecisionId } from "../oracle/oracle-encoding";
@@ -43,6 +44,7 @@ export class ClaimService {
     private readonly oracleService: OracleService,
     private readonly claimSettlementService: ClaimSettlementService,
     private readonly oracleEventRepository: OracleEventRepository,
+    private readonly evidenceStore: EvidenceStore
     private readonly claimSettlementRepository: ClaimSettlementRepository
   ) {}
 
@@ -56,7 +58,7 @@ export class ClaimService {
     for (const policy of activePolicies) {
       try {
         const fetchedAt = Math.floor(Date.now() / 1000);
-        const oracle = await this.fetchOracleData(policy);
+        const { reading: oracle, readingId } = await this.fetchOracleData(policy);
         const result = this.evaluatePolicy(policy, oracle, fetchedAt);
         if (result.triggered) {
           const windowStart = Math.floor(fetchedAt / DECISION_WINDOW_SECONDS) * DECISION_WINDOW_SECONDS;
@@ -75,7 +77,7 @@ export class ClaimService {
     return settled;
   }
 
-  private async fetchOracleData(policy: StoredPolicy): Promise<OracleReading> {
+  private async fetchOracleData(policy: StoredPolicy): Promise<{ reading: OracleReading; readingId: string | null }> {
     let reading: OracleReading;
     switch (policy.coverageType) {
       case 0:
@@ -104,8 +106,9 @@ export class ClaimService {
     // Persist every claim-evaluation reading — fire-and-forget so a DB
     // hiccup never disrupts the evaluation path.
     void this.oracleEventRepository.record(reading);
+    const readingId = this.evidenceStore.recordReading({ reading, observedAt: new Date() });
 
-    return reading;
+    return { reading, readingId };
   }
 
   private evaluatePolicy(policy: StoredPolicy, oracle: OracleReading, fetchedAt: number): ClaimResult {
@@ -142,11 +145,27 @@ export class ClaimService {
   private async processPayout(
     policy: StoredPolicy,
     result: ClaimResult,
-    decisionId: string
+    // Decision must be durable before the payout is submitted: if this
+    // throws, settleClaim is never called and no payout exists without a record.
+    const decisionId = await this.evidenceStore.recordDecision({
+      readingIds: readingId ? [readingId] : [],
+      oracle: OracleReading,
+      readingId: string | null,
+      decisionId: string,
   ): Promise<ClaimResult | undefined> {
     this.logger.warn(
       `PAYOUT triggered: policy=${policy.id} decision=${decisionId} holder=${policy.holder} payout=${result.payout} reason="${result.reason}"`
     );
+
+    // Decision must be durable before the payout is submitted: if this
+    // throws, settleClaim is never called and no payout exists without a record.
+    const decisionId = await this.evidenceStore.recordDecision({
+      readingIds: readingId ? [readingId] : [],
+      chosenValue: oracle.value,
+      rule: policy.coverageType === 4 ? "flight_delay: value > threshold" : "threshold: value < threshold",
+      policyId: policy.id,
+      payoutAmount: result.payout,
+    });
 
     // Durable guard before any on-chain submission: a replayed or concurrent
     // decision for the same policy/window (or any open settlement for the
