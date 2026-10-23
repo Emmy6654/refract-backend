@@ -125,6 +125,10 @@ reassessed against deployment exposure and on-chain contract controls.
   payloads and near-simultaneous observations. Admin cluster declarations are
   recorded in `source_cluster_overrides`. Still open: the admin route, wiring
   into the live scheduler, and external verification of operator ownership.
+  Operator pause is available: `POST /api/v1/oracle/pause` and
+  `POST /api/v1/oracle/resume` (per coverage type or `global`), with
+  `GET /api/v1/oracle/status`. Every change is recorded in the append-only
+  `oracle_pause_audit` table. Corroboration and mocked-source replacement remain open.
   *Partially mitigated:* freshness (1800 s staleness limit in `ClaimService`),
   fail-safe degraded readings that are never published, and a single evidence
   write per reading to `oracle_events`. *Remaining:* schema, numeric range,
