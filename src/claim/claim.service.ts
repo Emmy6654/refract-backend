@@ -34,6 +34,15 @@ const STALENESS_LIMIT_SECONDS = 1800; // 30 minutes — matches the old ClaimPro
  * confidence high enough, recorded in the evidence trail) and triggered.
  * Anything else (insufficient, conflicted, unrecorded, or a coverage type
  * with no live source) leaves the policy active and unpaid.
+ *
+ *
+ * Its only oracle input is a {@link ConsensusDecision} from
+ * ConsensusService. It never reads OracleService readings or anything the
+ * monitor last wrote. A payout needs a SettlementAuthorization, which only
+ * exists for a decision that is actionable (quorum met, sources agree,
+ * confidence high enough, recorded in the evidence trail) and triggered.
+ * Anything else (insufficient, conflicted, unrecorded, or a coverage type
+ * with no live source) leaves the policy active and unpaid.
  */
 /** Returns a feed's current trust state, or null when cross-region quorum isn't configured. */
 export type FeedTrustGate = (feedId: string) => FeedTrustState | null;
