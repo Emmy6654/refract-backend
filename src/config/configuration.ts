@@ -6,6 +6,10 @@
  * shape is documented in one place. See `.env.example` for the full list
  * of variables this reads.
  */
+
+/** Fee-estimation profiles exposed by FeeStrategyService. */
+export type FeeProfileName = "moderate" | "aggressive";
+
 export interface AppConfig {
   port: number;
   frontendUrl: string;
@@ -84,28 +88,49 @@ export interface AppConfig {
     httpTimeoutMs: number;
     feedLatencyBudgetsMs?: Record<string, number>;
   };
+  /** Soroban inclusion-fee estimation strategy. */
   fees: {
-    statsTtlMs: number;
+    /** Hard ceiling (stroops) above which FeeCeilingExceededError is thrown. */
     ceilingStroops: string;
+    /** TTL for the cached getFeeStats response (ms). */
+    statsTtlMs: number;
+    /** Per-profile percentile + multiplier used to derive an inclusion fee. */
     profiles: Record<FeeProfileName, { percentile: number; multiplier: number }>;
   };
+  /** Background Soroban event indexer settings. */
   eventIndexer: {
     enabled: boolean;
     pollIntervalMs: number;
+    lagAlertLedgers: number;
+    pageLimit: number;
     contractId: string;
   };
-  adminApiKey: string;
-  communityApiKeys: string[];
+  /** Ops-facing auth (bearer token + read-only community keys). */
   ops: {
     apiToken: string;
     communityApiKeys: string[];
+  };
+  /** Admin-only API key (x-api-key header). */
+  adminApiKey: string;
+  /** Community-scoped API key records accepted on read-only endpoints. */
+  communityApiKeys: Array<{
+    key: string;
+    scope: "community";
+    contact: string;
+    rateLimitPerMinute: number;
+    createdAt: string;
+  }>;
+  /** Named throttling tiers consumed by ThrottlerModule. */
+  throttle: {
+    upstream: { ttl: number; limit: number };
+    chain: { ttl: number; limit: number };
+    default: { ttl: number; limit: number };
+    catalog: { ttl: number; limit: number };
   };
   oracleTrustMode: "strict" | "quorum" | "development";
   /** Pending off-chain policies that never get submitted expire after this many ms. */
   policyPendingTtlMs: number;
 }
-
-export type FeeProfileName = "moderate" | "aggressive";
 
 const NETWORK_CONFIG: Record<string, { sorobanRpcUrl: string; horizonUrl: string; networkPassphrase: string }> = {
   testnet: {
@@ -228,13 +253,33 @@ export default (): AppConfig => {
     eventIndexer: {
       enabled: (process.env.EVENT_INDEXER_ENABLED || "false") === "true",
       pollIntervalMs: parseInt(process.env.EVENT_INDEXER_POLL_INTERVAL_MS || "5000", 10),
+      lagAlertLedgers: parseInt(process.env.EVENT_INDEXER_LAG_ALERT_LEDGERS || "7200", 10),
+      pageLimit: parseInt(process.env.EVENT_INDEXER_PAGE_LIMIT || "200", 10),
       contractId: process.env.REFRACT_POOL_CONTRACT_ID || "",
     },
-    adminApiKey: process.env.ADMIN_API_KEY || "",
-    communityApiKeys: parseCsv(process.env.COMMUNITY_API_KEYS),
     ops: {
       apiToken: process.env.OPS_API_TOKEN || "",
       communityApiKeys: parseCsv(process.env.COMMUNITY_API_KEYS),
+    },
+    adminApiKey: process.env.ADMIN_API_KEY || "",
+    communityApiKeys: [],
+    throttle: {
+      upstream: {
+        ttl: parseInt(process.env.THROTTLE_UPSTREAM_TTL_MS || "60000", 10),
+        limit: parseInt(process.env.THROTTLE_UPSTREAM_LIMIT || "60", 10),
+      },
+      chain: {
+        ttl: parseInt(process.env.THROTTLE_CHAIN_TTL_MS || "60000", 10),
+        limit: parseInt(process.env.THROTTLE_CHAIN_LIMIT || "20", 10),
+      },
+      default: {
+        ttl: parseInt(process.env.THROTTLE_DEFAULT_TTL_MS || "60000", 10),
+        limit: parseInt(process.env.THROTTLE_DEFAULT_LIMIT || "600", 10),
+      },
+      catalog: {
+        ttl: parseInt(process.env.THROTTLE_CATALOG_TTL_MS || "60000", 10),
+        limit: parseInt(process.env.THROTTLE_CATALOG_LIMIT || "300", 10),
+      },
     },
     oracleTrustMode: parseTrustMode(process.env.ORACLE_TRUST_MODE),
     policyPendingTtlMs: parseInt(process.env.POLICY_PENDING_TTL_MS || "3600000", 10),

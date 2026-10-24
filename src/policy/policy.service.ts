@@ -225,6 +225,9 @@ export class PolicyService {
       return null;
     }
     try {
+      // pool_config() is a stateless view with no caller-specific args, so
+      // the source account only needs to be well-formed for the tx
+      // envelope — it never touches the network, unlike getAccount().
       const dummySource = new Account(Keypair.random().publicKey(), "0");
       const contract = new Contract(this.poolContractId);
       const tx = new TransactionBuilder(dummySource, {
