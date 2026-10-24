@@ -11,9 +11,11 @@
   ],
   "scripts": {
     "build": "nest build",
+    "dev": "nodemon --exec ts-node src/main.ts",
     "start": "nest start",
     "start:dev": "nest start --watch",
     "start:prod": "node dist/main",
+    "typecheck": "tsc --noEmit",
     "lint": "eslint \"src/**/*.ts\"",
     "test": "jest",
     "test:cov": "jest --coverage",
@@ -42,6 +44,9 @@
     "transform": {
       "^.+\\.(t|j)s$": "ts-jest"
     },
+    "transformIgnorePatterns": [
+      "/node_modules/(?!(?:@stellar/stellar-sdk|@noble/.*|@scure/.*|uint8array-extras|hexoid|bignumber.js))"
+    ],
     "collectCoverageFrom": ["**/*.(t|j)s"],
     "coverageDirectory": "../coverage"
   },
@@ -71,6 +76,7 @@
     "pg": "^8.11.3",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2",
+    "uuid": "^14.0.3",
     "winston": "^3.11.0",
     "ws": "^8.16.0",
     "zod": "^3.22.4"

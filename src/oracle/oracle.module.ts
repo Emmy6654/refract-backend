@@ -99,6 +99,8 @@ const attestationVerifierProvider: Provider = {
     OracleMonitorService,
     FreshnessEnforcementService,
     OracleEventRepository,
+
+    // Gateway, scheduler & publisher
     OracleGateway,
     OracleScheduler,
     OraclePublisherService,
@@ -121,4 +123,3 @@ const attestationVerifierProvider: Provider = {
   ],
 })
 export class OracleModule {}
-</｜｜DSML｜｜ parameter>

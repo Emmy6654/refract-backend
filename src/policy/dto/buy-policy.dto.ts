@@ -1,37 +1,42 @@
 import {
-  IsInt,
-  IsObject,
+  IsString,
   IsNotEmpty,
   IsOptional,
-  IsString,
-  Length,
-  Matches,
-  Max,
-  MaxLength,
+  IsNumber,
+  IsInt,
   Min,
+  Max,
+  Matches,
+  Length,
+  MaxLength,
+  IsObject,
   Validate,
   ValidateIf,
   ValidatorConstraint,
   ValidatorConstraintInterface,
+  ValidationArguments,
 } from "class-validator";
 import { IsStellarPublicKey } from "../../common/validators/stellar-address.validator";
 
-@ValidatorConstraint({ name: "isFlatTriggerParams", async: false })
-class IsFlatTriggerParamsConstraint implements ValidatorConstraintInterface {
+@ValidatorConstraint({ name: "triggerParams", async: false })
+class TriggerParamsConstraint implements ValidatorConstraintInterface {
   validate(value: unknown): boolean {
-    if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-    const entries = Object.entries(value);
-    return entries.length <= 8 && entries.every(
-      ([key, field]) =>
-        key.length > 0 &&
-        key.length <= 64 &&
-        (typeof field === "string" || typeof field === "number" || typeof field === "boolean") &&
-        (typeof field !== "string" || field.length <= 256)
-    );
+    if (value === null || value === undefined) return false;
+    if (typeof value !== "object" || Array.isArray(value)) return false;
+
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (entries.length === 0 || entries.length > 8) return false;
+
+    return entries.every(([key, entryValue]) => {
+      if (typeof key !== "string" || key.length === 0 || key.length > 64) return false;
+      if (typeof entryValue === "string") return entryValue.length > 0 && entryValue.length <= 256;
+      if (typeof entryValue === "number" || typeof entryValue === "boolean") return Number.isFinite(entryValue);
+      return false;
+    });
   }
 
-  defaultMessage(): string {
-    return "triggerParams must be a flat object containing at most 8 scalar values";
+  defaultMessage(args: ValidationArguments): string {
+    return `${args.property} must be a flat object of scalar values with at most 8 keys`;
   }
 }
 
@@ -40,6 +45,15 @@ export class BuyPolicyDto {
   @IsNotEmpty()
   @IsStellarPublicKey()
   holder!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  policyId!: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  premium?: number;
 
   @IsInt()
   @Min(0)
@@ -57,9 +71,8 @@ export class BuyPolicyDto {
   @Max(365)
   durationDays!: number;
 
-  @ValidateIf((_object, value) => value !== undefined)
-  @IsObject()
-  @Validate(IsFlatTriggerParamsConstraint)
+  @ValidateIf((obj) => obj.triggerParams !== undefined)
+  @Validate(TriggerParamsConstraint)
   triggerParams?: Record<string, unknown>;
 }
 
@@ -93,8 +106,7 @@ export class PreflightPolicyDto {
   @Max(365)
   durationDays!: number;
 
-  @ValidateIf((_object, value) => value !== undefined)
-  @IsObject()
-  @Validate(IsFlatTriggerParamsConstraint)
+  @ValidateIf((obj) => obj.triggerParams !== undefined)
+  @Validate(TriggerParamsConstraint)
   triggerParams?: Record<string, unknown>;
 }

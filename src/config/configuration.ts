@@ -1,5 +1,8 @@
 export type FeeProfileName = "moderate" | "aggressive";
 
+/**
+ * Typed application configuration, loaded once by Nest's ConfigModule.
+ */
 export interface AppConfig {
   port: number;
   frontendUrl: string;
@@ -13,35 +16,47 @@ export interface AppConfig {
     connectRetries: number;
     connectRetryDelayMs: number;
   };
-  redis: { url: string };
+  redis: {
+    url: string;
+  };
   stellar: {
     network: string;
     sorobanRpcUrl: string;
     sorobanRpcUrls: string[];
     eventStartLedger: number;
+    horizonUrl: string;
     networkPassphrase: string;
     poolContractId: string;
     policyContractId: string;
     oracleContractId: string;
-    relayerSecret: string;
-    validateOnChain: boolean;
-    requireNetwork: boolean;
-    validateTimeoutMs: number;
-    relayer: {
+    relayerSecret?: string;
+    relayerSecretId?: string;
+    relayerSecretRegion?: string;
+    validateOnChain?: boolean;
+    requireNetwork?: boolean;
+    validateTimeoutMs?: number;
+    relayer?: {
       feeMultiplier: number;
       feeCeiling: number;
       idleResyncMs: number;
       minBalance: number;
       maxAttempts: number;
     };
-    eventIndexer: {
+    eventIndexer?: {
       enabled: boolean;
       pollIntervalMs: number;
       lagAlertLedgers: number;
       pageLimit: number;
     };
   };
-  confirmation: {
+  oracles: {
+    coingeckoBaseUrl: string;
+    horizonUrl: string;
+    defiLlamaBaseUrl: string;
+    defiLlamaProtocolSlug: string;
+    httpTimeoutMs: number;
+  };
+  confirmation?: {
     initialIntervalMs: number;
     backoffMultiplier: number;
     maxIntervalMs: number;
@@ -50,13 +65,9 @@ export interface AppConfig {
     settlementDeadlineMs: number;
     httpDeadlineMs: number;
   };
-  oraclePublish: { mode: "every_poll" | "on_change"; minIntervalMs: number };
-  oracles: {
-    coingeckoBaseUrl: string;
-    horizonUrl: string;
-    defiLlamaBaseUrl: string;
-    defiLlamaProtocolSlug: string;
-    httpTimeoutMs: number;
+  oraclePublish?: {
+    mode: "every_poll" | "on_change";
+    minIntervalMs: number;
   };
   fees: {
     statsTtlMs: number;
@@ -81,7 +92,7 @@ export interface AppConfig {
   throttle: Record<"upstream" | "chain" | "default" | "catalog", { ttl: number; limit: number }>;
 }
 
-const NETWORKS = {
+const NETWORK_CONFIG: Record<string, { sorobanRpcUrl: string; horizonUrl: string; networkPassphrase: string }> = {
   testnet: {
     sorobanRpcUrl: "https://soroban-testnet.stellar.org",
     horizonUrl: "https://horizon-testnet.stellar.org",
@@ -97,7 +108,7 @@ const NETWORKS = {
     horizonUrl: "https://horizon.stellar.org",
     networkPassphrase: "Public Global Stellar Network ; September 2015",
   },
-} as const;
+};
 
 function numberFromEnv(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -107,12 +118,17 @@ function numberFromEnv(name: string, fallback: number): number {
   return value;
 }
 
+function readBool(value: string | undefined, fallback: boolean): boolean {
+  if (value === undefined) return fallback;
+  return value === "1" || value.toLowerCase() === "true" || value.toLowerCase() === "yes";
+}
+
 export default (): AppConfig => {
   const network = (process.env.STELLAR_NETWORK ?? "testnet").trim().toLowerCase();
-  if (!Object.prototype.hasOwnProperty.call(NETWORKS, network)) {
+  if (!Object.prototype.hasOwnProperty.call(NETWORK_CONFIG, network)) {
     throw new Error("STELLAR_NETWORK expected testnet, futurenet, or mainnet");
   }
-  const selectedNetwork = NETWORKS[network as keyof typeof NETWORKS];
+  const selectedNetwork = NETWORK_CONFIG[network];
   const suffix = network.toUpperCase();
   const env = process.env;
 
@@ -138,14 +154,17 @@ export default (): AppConfig => {
         .map((url) => url.trim())
         .filter(Boolean),
       eventStartLedger: numberFromEnv("EVENT_START_LEDGER", 1),
+      horizonUrl: selectedNetwork.horizonUrl,
       networkPassphrase: selectedNetwork.networkPassphrase,
       poolContractId: env[`REFRACT_POOL_CONTRACT_ID_${suffix}`] ?? env.REFRACT_POOL_CONTRACT_ID ?? "",
       policyContractId: env[`REFRACT_POLICY_CONTRACT_ID_${suffix}`] ?? env.REFRACT_POLICY_CONTRACT_ID ?? "",
       oracleContractId: env[`REFRACT_ORACLE_CONTRACT_ID_${suffix}`] ?? env.REFRACT_ORACLE_CONTRACT_ID ?? "",
       relayerSecret: env.ORACLE_RELAYER_SECRET ?? "",
-      validateOnChain: env.STELLAR_VALIDATE_ONCHAIN === "true",
-      requireNetwork: env.STELLAR_REQUIRE_NETWORK === "true",
-      validateTimeoutMs: numberFromEnv("STELLAR_VALIDATE_TIMEOUT_MS", 5_000),
+      relayerSecretId: env.ORACLE_RELAYER_SECRET_ID ?? "",
+      relayerSecretRegion: env.ORACLE_RELAYER_SECRET_REGION ?? "us-east-1",
+      validateOnChain: readBool(env.STELLAR_VALIDATE_ONCHAIN ?? env.VALIDATE_ON_CHAIN, false),
+      requireNetwork: readBool(env.STELLAR_REQUIRE_NETWORK ?? env.REQUIRE_NETWORK, false),
+      validateTimeoutMs: numberFromEnv("STELLAR_VALIDATE_TIMEOUT_MS", numberFromEnv("VALIDATE_TIMEOUT_MS", 5_000)),
       relayer: {
         feeMultiplier: numberFromEnv("RELAYER_FEE_MULTIPLIER", 1.2),
         feeCeiling: numberFromEnv("RELAYER_FEE_CEILING", 1_000_000),
@@ -154,11 +173,18 @@ export default (): AppConfig => {
         maxAttempts: numberFromEnv("RELAYER_MAX_ATTEMPTS", 3),
       },
       eventIndexer: {
-        enabled: env.EVENT_INDEXER_ENABLED === "true",
+        enabled: readBool(env.EVENT_INDEXER_ENABLED, false),
         pollIntervalMs: numberFromEnv("EVENT_INDEXER_POLL_INTERVAL_MS", 5_000),
         lagAlertLedgers: numberFromEnv("EVENT_INDEXER_LAG_ALERT_LEDGERS", 100),
         pageLimit: numberFromEnv("EVENT_INDEXER_PAGE_LIMIT", 100),
       },
+    },
+    oracles: {
+      coingeckoBaseUrl: env.COINGECKO_BASE_URL ?? "https://api.coingecko.com/api/v3",
+      horizonUrl: selectedNetwork.horizonUrl,
+      defiLlamaBaseUrl: env.DEFILLAMA_BASE_URL ?? "https://api.llama.fi",
+      defiLlamaProtocolSlug: env.DEFILLAMA_PROTOCOL_SLUG ?? "aave",
+      httpTimeoutMs: numberFromEnv("ORACLE_HTTP_TIMEOUT_MS", 5_000),
     },
     confirmation: {
       initialIntervalMs: numberFromEnv("CONFIRMATION_INITIAL_INTERVAL_MS", 400),
@@ -173,19 +199,6 @@ export default (): AppConfig => {
       mode: env.ORACLE_PUBLISH_MODE === "every_poll" ? "every_poll" : "on_change",
       minIntervalMs: numberFromEnv("ORACLE_PUBLISH_MIN_INTERVAL_MS", 300_000),
     },
-    oracles: {
-      coingeckoBaseUrl: env.COINGECKO_BASE_URL ?? "https://api.coingecko.com/api/v3",
-      horizonUrl: selectedNetwork.horizonUrl,
-      defiLlamaBaseUrl: env.DEFILLAMA_BASE_URL ?? "https://api.llama.fi",
-      defiLlamaProtocolSlug: env.DEFILLAMA_PROTOCOL_SLUG ?? "aave",
-      httpTimeoutMs: numberFromEnv("ORACLE_HTTP_TIMEOUT_MS", 5_000),
-    },
-    eventIndexer: {
-      enabled: env.EVENT_INDEXER_ENABLED === "true",
-      pollIntervalMs: numberFromEnv("EVENT_INDEXER_POLL_INTERVAL_MS", 5_000),
-      lagAlertLedgers: numberFromEnv("EVENT_INDEXER_LAG_ALERT_LEDGERS", 100),
-      pageLimit: numberFromEnv("EVENT_INDEXER_PAGE_LIMIT", 100),
-    },
     fees: {
       statsTtlMs: numberFromEnv("FEE_STATS_TTL_MS", 15_000),
       ceilingStroops: String(numberFromEnv("FEE_CEILING_STROOPS", 10_000_000)),
@@ -199,6 +212,12 @@ export default (): AppConfig => {
           multiplier: numberFromEnv("FEE_AGGRESSIVE_MULTIPLIER", 1.5),
         },
       },
+    },
+    eventIndexer: {
+      enabled: readBool(env.EVENT_INDEXER_ENABLED, false),
+      pollIntervalMs: numberFromEnv("EVENT_INDEXER_POLL_INTERVAL_MS", 5_000),
+      lagAlertLedgers: numberFromEnv("EVENT_INDEXER_LAG_ALERT_LEDGERS", 100),
+      pageLimit: numberFromEnv("EVENT_INDEXER_PAGE_LIMIT", 100),
     },
     policyPendingTtlMs: numberFromEnv("POLICY_PENDING_TTL_MS", 3_600_000),
     adminApiKey: env.ADMIN_API_KEY ?? "",

@@ -1,32 +1,21 @@
-import { Global, Inject, Injectable, Module, OnApplicationShutdown } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
-import { Pool } from "pg";
-import { AppConfig } from "../config/configuration";
+import { Global, Module } from "@nestjs/common";
+import { DATABASE_POOL, DatabaseModule } from "../database/database.module";
+import { DatabaseService } from "./database.service";
 import { DbService } from "./db.service";
 
 export const PG_POOL = Symbol("PG_POOL");
 
-@Injectable()
-class PgPoolShutdown implements OnApplicationShutdown {
-  constructor(@Inject(PG_POOL) private readonly pool: Pool) {}
-
-  async onApplicationShutdown(): Promise<void> {
-    await this.pool.end();
-  }
-}
-
 @Global()
 @Module({
+  imports: [DatabaseModule],
   providers: [
     DbService,
+    DatabaseService,
     {
       provide: PG_POOL,
-      inject: [ConfigService],
-      useFactory: (config: ConfigService<AppConfig, true>) =>
-        new Pool({ connectionString: config.get("database.url", { infer: true }) }),
+      useExisting: DATABASE_POOL,
     },
-    PgPoolShutdown,
   ],
-  exports: [DbService, PG_POOL],
+  exports: [DbService, DatabaseService, PG_POOL],
 })
 export class DbModule {}
