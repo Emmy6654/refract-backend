@@ -1,5 +1,6 @@
 import { Module, Provider } from "@nestjs/common";
 import { ConfigModule, ConfigService } from "@nestjs/config";
+
 import { DbModule } from "../db/db.module";
 import { StellarModule } from "../stellar/stellar.module";
 import { OracleController } from "./oracle.controller";
@@ -96,6 +97,9 @@ const attestationVerifierProvider: Provider = {
 
     // Core oracle services
     OracleService,
+    OracleGateway,
+    OracleScheduler,
+    OraclePublisherService,
     OracleMonitorService,
     FreshnessEnforcementService,
     OracleEventRepository,
@@ -107,6 +111,8 @@ const attestationVerifierProvider: Provider = {
   ],
   exports: [
     OracleService,
+    OracleGateway,
+    OraclePublisherService,
     OracleMonitorService,
     FreshnessEnforcementService,
     ClockService,
