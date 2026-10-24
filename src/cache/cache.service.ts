@@ -74,7 +74,15 @@ export class CacheService implements OnModuleInit, OnModuleDestroy, OnApplicatio
     await this.close();
   }
 
-  async onApplicationShutdown(): Promise<void> {
+  /**
+   * Gracefully close the Redis connection pool during application shutdown.
+   * Called by Nest when `app.enableShutdownHooks()` is active and the process
+   * receives SIGTERM/SIGINT, ensuring in-flight commands drain before exit.
+   */
+  async onApplicationShutdown(signal?: string): Promise<void> {
+    this.logger.log(
+      `Closing Redis connection pool${signal ? ` (signal: ${signal})` : ''}...`,
+    );
     await this.close();
   }
 

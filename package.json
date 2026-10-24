@@ -1,8 +1,14 @@
 {
-  "name": "refract-protocol-backend",
+  "name": "refract",
   "version": "0.1.0",
   "private": true,
+  "description": "Refract oracle network monorepo",
   "main": "dist/main.js",
+  "workspaces": [
+    "refract-backend",
+    "refract-frontend",
+    "refract-contracts"
+  ],
   "scripts": {
     "build": "nest build",
     "start": "nest start",
@@ -12,17 +18,32 @@
     "test": "jest",
     "test:cov": "jest --coverage",
     "test:integration": "jest --config test/integration/jest.integration.config.ts --runInBand",
+    "test:unit": "npm run test --workspaces --if-present",
+    "test:contracts": "node test/contracts/verify.js",
+    "test:contracts:update": "node test/contracts/verify.js --update",
+    "attack-cost": "node scripts/attack-cost.js",
+    "attack-cost:reference": "node scripts/attack-cost.js --fixture test/fixtures/attack-cost/reference.json",
+    "ci": "npm run lint && npm run test",
     "migrate:up": "node-pg-migrate up --migrations-dir migrations --config-file database.json",
     "migrate:down": "node-pg-migrate down --migrations-dir migrations --config-file database.json",
     "migrate:create": "node-pg-migrate create --migrations-dir migrations --config-file database.json",
     "migrate:status": "node-pg-migrate status --migrations-dir migrations --config-file database.json",
     "regenerate:xdr-fixtures": "ts-node scripts/regenerate-xdr-fixtures.ts"
   },
+  "engines": {
+    "node": ">=18"
+  },
   "jest": {
     "preset": "ts-jest",
     "testEnvironment": "node",
     "rootDir": "src",
-    "testRegex": ".*\\.spec\\.ts$"
+    "testRegex": ".*\\.spec\\.ts$",
+    "moduleFileExtensions": ["js", "json", "ts"],
+    "transform": {
+      "^.+\\.(t|j)s$": "ts-jest"
+    },
+    "collectCoverageFrom": ["**/*.(t|j)s"],
+    "coverageDirectory": "../coverage"
   },
   "dependencies": {
     "@aws-sdk/client-secrets-manager": "^3.1142.0",
@@ -36,7 +57,7 @@
     "@nestjs/throttler": "^6.0.0",
     "@nestjs/websockets": "^11.1.28",
     "@prometheus-io/client": "^0.16.1",
-    "@stellar/stellar-sdk": "^12.3.0",
+    "@stellar/stellar-sdk": "^16.3.0",
     "axios": "^1.6.0",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",

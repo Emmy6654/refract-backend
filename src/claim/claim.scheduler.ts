@@ -1,6 +1,8 @@
-import { Injectable, Logger, OnApplicationShutdown } from "@nestjs/common";
-import { Cron, CronExpression } from "@nestjs/schedule";
-import { ClaimService } from "./claim.service";
+import { Injectable, Logger, OnApplicationShutdown, OnModuleInit } from '@nestjs/common';
+import { Cron, CronExpression } from '@nestjs/schedule';
+import { ClaimService } from './claim.service';
+import { ProtocolParametersService } from '../parameters/protocol-parameters.service';
+import { LeaderElector } from '../leader/leader-elector.service';
 
 /**
  * Upper bound (ms) we are willing to wait for an in-flight settlement run to
@@ -28,6 +30,8 @@ export class ClaimScheduler implements OnApplicationShutdown {
 
   constructor(
     private readonly claimService: ClaimService,
+    private readonly protocolParameters: ProtocolParametersService,
+    private readonly leaderElector: LeaderElector,
   ) {}
 
   @Cron(CronExpression.EVERY_MINUTE)
@@ -36,6 +40,11 @@ export class ClaimScheduler implements OnApplicationShutdown {
       this.logger.log(
         'Skipping claim settlement run: scheduler is shutting down.',
       );
+      return;
+    }
+
+    if (!this.leaderElector.isLeader()) {
+      this.logger.debug('Skipping claim settlement run: this instance is not the leader.');
       return;
     }
 

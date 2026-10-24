@@ -36,7 +36,7 @@
  *   must filter to `live` products so a draft is never accidentally live.
  * - Each publish transition records an approval record (who drafted, who
  *   published, when) so the governance step is auditable.
-
+ *
  */
 export type CoverageType =
   | "StablecoinDepeg"

@@ -241,8 +241,8 @@ export class PoolService {
 
     try {
       const [positionRetval, stateRetval, lockupExpiresAt] = await Promise.all([
-        this.simulateRead("shares_of", encodeProviderPosition(address)),
-        this.simulateRead("pool_stats", []),
+        this.simulateRead("provider_position", encodeProviderPosition(address)),
+        this.simulateRead("pool_state", []),
         this.lockupExpiresAt(address),
       ]);
 

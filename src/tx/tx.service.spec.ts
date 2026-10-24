@@ -29,7 +29,13 @@ const CONFIRMATION: AppConfig["confirmation"] = {
 
 function buildConfig(overrides: Partial<AppConfig["stellar"]> = {}): ConfigService<AppConfig, true> {
   const stellar = testStellarConfig({
+    network: "testnet",
+    sorobanRpcUrl: "https://soroban-testnet.stellar.org",
+    networkPassphrase: NETWORK_PASSPHRASE,
     poolContractId: StrKey.encodeContract(Buffer.alloc(32, 1)),
+    policyContractId: "",
+    oracleContractId: "",
+    relayerSecret: "",
     ...overrides,
   });
   return {
