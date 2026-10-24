@@ -1,8 +1,10 @@
+import type { ReadingProvenance } from "./oracle-encoding";
 import { FreshnessRejectionReason } from "./freshnessPolicy";
 
 export type Severity = "low" | "medium" | "high" | "triggered";
 
 export interface OracleReading {
+  readingId?: string;
   coverageType: string;
   type: "oracle_update";
   value: number;
@@ -10,7 +12,8 @@ export interface OracleReading {
   severity: Severity;
   message: string;
   feedId?: string;
-  observedAt?: number;
+  source?: string;
+  timestamp?: number;
   deadlineAt?: number;
   fetchDurationMs?: number;
   /**
@@ -18,6 +21,12 @@ export interface OracleReading {
    * OraclePublisherService must never publish degraded readings on-chain.
    */
   degraded?: boolean;
+  /**
+   * Consensus provenance (trust tier, agreeing source count, decision id,
+   * source timestamp). Present only for readings that reached consensus;
+   * published on-chain next to the value. Never set on degraded readings.
+   */
+  provenance?: ReadingProvenance;
   /**
    * Upstream observation time (ISO-8601 with explicit offset, or a Date).
    * Consensus uses this; readings without it are rejected at ingestion.

@@ -165,6 +165,31 @@ copy `.env.example` to `.env`, install Node.js 22 dependencies, apply
 
 Stop the stack with `docker compose down`. Persistent database and Redis data
 remain in Docker volumes; `docker compose down -v` removes them.
+
+### API and worker tiers
+
+The backend runs as two separately deployable processes:
+
+| Process | Entrypoint | `PROCESS_ROLE` | Does |
+|---|---|---|---|
+| API | `dist/main.js` | `api` | REST reads + the `/oracle` WebSocket feed |
+| Worker | `dist/worker.js` | `worker` | oracle polling, consensus, on-chain publishing, claim settlement |
+
+The worker publishes readings to Redis (`REDIS_URL` is required for a split
+deployment); the API relays them to WebSocket clients and serves the latest
+reading per coverage type. Each tier can be scaled and restarted on its own,
+and a burst of API traffic cannot delay a payout.
+
+- Run **one** worker per relayer key — the relayer's sequence numbers are
+  tracked in-process.
+- The worker exposes `GET /health` (503 when a pipeline stage stops
+  succeeding for `WORKER_STALE_AFTER_MS`, default 10 min) and `GET /metrics`
+  on `WORKER_HEALTH_PORT` (default 4002).
+- Leaving `PROCESS_ROLE` unset runs both tiers in one process (`all`). That
+  is the default so existing deployments keep paying out, and it is handy
+  locally, but deployed environments should split.
+
+`docker compose up` starts both tiers.
 ## Scripts
 
 | Command | Purpose |
@@ -172,8 +197,11 @@ remain in Docker volumes; `docker compose down -v` removes them.
 | `npm run dev` | Hot-reloading dev server (ts-node + nodemon) |
 | `npm run build` | Compile TypeScript to `dist/` |
 | `npm start` | Run the compiled server |
+| `npm run start:worker` / `start:worker:prod` | Run the worker tier (dev / compiled) |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run lint` | ESLint over `src/` |
+| `npm test` | Jest unit tests (includes property-based tests) |
+| `npm run test:property` | Only the property-based / fuzz suites (`*.property.spec.ts`); set `FC_NUM_RUNS=20000` for a deeper soak, `FC_SEED=<seed>` to replay a failure |
 
 ## Operator CLI
 

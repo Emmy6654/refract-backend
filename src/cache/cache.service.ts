@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
+import { Injectable, Logger, OnApplicationShutdown, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import Redis from "ioredis";
 import { AppConfig } from "../config/configuration";
@@ -22,17 +22,15 @@ import { AppConfig } from "../config/configuration";
  */
 export const ORACLE_TTL = 55;
 
-export const ORACLE_TTL = 55;
-
 @Injectable()
-export class CacheService implements OnModuleInit, OnModuleDestroy {
+export class CacheService implements OnModuleInit, OnModuleDestroy, OnApplicationShutdown {
   private readonly logger = new Logger(CacheService.name);
-  private client!: Redis;
+  private readonly client: Redis;
+  private closed = false;
 
-  constructor(private readonly configService: ConfigService<AppConfig, true>) {}
-
-  onModuleInit(): void {
-    const { url } = this.configService.get("redis", { infer: true });
+  constructor(private readonly configService: ConfigService<AppConfig, true>) {
+    const configured = this.configService.get("redis", { infer: true });
+    const url = process.env.REDIS_URL ?? configured.url;
     this.client = new Redis(url, {
       // Don't retry indefinitely — give up after 3 reconnection attempts
       // so a missing Redis doesn't stall startup.
@@ -47,9 +45,7 @@ export class CacheService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
-  async onModuleDestroy(): Promise<void> {
-    await this.client?.quit().catch(() => undefined);
-  }
+  onModuleInit(): void {}
 
   /** Returns the parsed JSON value for `key`, or `null` on miss or error. */
   async get<T>(key: string): Promise<T | null> {
@@ -57,37 +53,43 @@ export class CacheService implements OnModuleInit, OnModuleDestroy {
       const raw = await this.client.get(key);
       return raw ? (JSON.parse(raw) as T) : null;
     } catch (err) {
-      this.logger.warn(`cache.get("${key}") failed: ${(err as Error).message}`);
+      this.logger.warn(`cache.get("${key}") failed: ${this.errorMessage(err)}`);
       return null;
     }
   }
 
   /** Serialises `value` to JSON and stores it under `key` for `ttlSeconds`. */
-  async set<T>(key: string, value: T, ttlSeconds: number): Promise<void> {
+  async set<T>(key: string, value: T, ttlSeconds?: number): Promise<void> {
     try {
-      await this.client.set(key, JSON.stringify(value), "EX", ttlSeconds);
+      const serialized = JSON.stringify(value);
+      if (ttlSeconds) await this.client.set(key, serialized, "EX", ttlSeconds);
+      else await this.client.set(key, serialized);
     } catch (err) {
-      this.logger.warn(`cache.set("${key}") failed: ${(err as Error).message}`);
+      this.logger.warn(`cache.set("${key}") failed: ${this.errorMessage(err)}`);
     }
   }
 
   /** Deletes one or more keys (best-effort). */
   async del(...keys: string[]): Promise<void> {
+    if (keys.length === 0) return;
     try {
-      if (keys.length > 0) await this.client.del(...keys);
+      await this.client.del(...keys);
     } catch (err) {
-      this.logger.warn(`cache.del(${keys.join(",")}) failed: ${(err as Error).message}`);
+      this.logger.warn(`cache.del(${keys.join(",")}) failed: ${this.errorMessage(err)}`);
     }
   }
 
-  async wrap<T>(key: string, ttlSeconds: number, loader: () => Promise<T>): Promise<T> {
-    const cached = await this.get<T>(key);
-    if (cached !== null) {
-      return cached;
+  async ping(): Promise<boolean> {
+    try {
+      return (await this.client.ping()) === "PONG";
+    } catch (error) {
+      this.logger.warn(`Redis health check failed: ${this.errorMessage(error)}`);
+      return false;
     }
-    const value = await loader();
-    await this.set(key, value, ttlSeconds);
-    return value;
+  }
+
+  isConnected(): boolean {
+    return this.client.status === "ready";
   }
 
   /**
@@ -112,5 +114,31 @@ export class CacheService implements OnModuleInit, OnModuleDestroy {
     const fresh = await loader();
     await this.set(key, fresh, ttlSeconds);
     return fresh;
+  }
+
+  async onModuleDestroy(): Promise<void> {
+    await this.close();
+  }
+
+  async onApplicationShutdown(signal?: string): Promise<void> {
+    this.logger.log(
+      `Closing Redis connection pool${signal ? ` (signal: ${signal})` : ''}...`,
+    );
+    await this.close();
+  }
+
+  private async close(): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
+    try {
+      await this.client.quit();
+    } catch (error) {
+      this.logger.error(`Failed to close Redis connection: ${this.errorMessage(error)}`);
+      this.client.disconnect();
+    }
+  }
+
+  private errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
   }
 }

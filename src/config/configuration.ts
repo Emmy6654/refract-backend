@@ -1,3 +1,5 @@
+export type FeeProfileName = "moderate" | "aggressive";
+
 /**
  * Typed application configuration, loaded once by Nest's ConfigModule.
  *
@@ -29,6 +31,8 @@ export interface AppConfig {
   stellar: {
     network: string;
     sorobanRpcUrl: string;
+    sorobanRpcUrls: string[];
+    eventStartLedger: number;
     horizonUrl: string;
     networkPassphrase: string;
     poolContractId: string;
@@ -150,139 +154,135 @@ const NETWORK_CONFIG: Record<string, { sorobanRpcUrl: string; horizonUrl: string
   },
 };
 
+function numberFromEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value)) throw new Error(`${name} must be a number`);
+  return value;
+}
+
 function readBool(value: string | undefined, fallback: boolean): boolean {
   if (value === undefined) return fallback;
   return value === "1" || value.toLowerCase() === "true" || value.toLowerCase() === "yes";
 }
 
 export default (): AppConfig => {
-  const network = (process.env.STELLAR_NETWORK || "testnet").toLowerCase();
-  const selected = NETWORK_CONFIG[network];
-  if (!selected) {
-    throw new Error("expected testnet, futurenet, or mainnet");
+  const network = (process.env.STELLAR_NETWORK ?? "testnet").trim().toLowerCase();
+  if (!Object.prototype.hasOwnProperty.call(NETWORK_CONFIG, network)) {
+    throw new Error("STELLAR_NETWORK expected testnet, futurenet, or mainnet");
   }
-
+  const selectedNetwork = NETWORK_CONFIG[network];
   const suffix = network.toUpperCase();
-  const networkSpecificPoolId = process.env[`REFRACT_POOL_CONTRACT_ID_${suffix}`];
-  const networkSpecificPolicyId = process.env[`REFRACT_POLICY_CONTRACT_ID_${suffix}`];
-  const networkSpecificOracleId = process.env[`REFRACT_ORACLE_CONTRACT_ID_${suffix}`];
+  const env = process.env;
 
   return {
-    port: parseInt(process.env.PORT || "4001", 10),
-    frontendUrl: process.env.FRONTEND_URL || "http://localhost:3000",
+    port: numberFromEnv("PORT", 4001),
+    frontendUrl: env.FRONTEND_URL ?? "http://localhost:3000",
     database: {
-      url: process.env.DATABASE_URL || "postgres://refract:refract@localhost:5432/refract",
-      poolMax: parseInt(process.env.DB_POOL_MAX || "10", 10),
-      poolMin: parseInt(process.env.DB_POOL_MIN || "2", 10),
-      poolIdleTimeoutMs: parseInt(process.env.DB_POOL_IDLE_TIMEOUT_MS || "30000", 10),
-      poolAcquireTimeoutMs: parseInt(process.env.DB_POOL_ACQUIRE_TIMEOUT_MS || "5000", 10),
-      statementTimeoutMs: parseInt(process.env.DB_STATEMENT_TIMEOUT_MS || "30000", 10),
-      connectRetries: parseInt(process.env.DB_CONNECT_RETRIES || "5", 10),
-      connectRetryDelayMs: parseInt(process.env.DB_CONNECT_RETRY_DELAY_MS || "1000", 10),
+      url: env.DATABASE_URL ?? "postgres://localhost:5432/refract",
+      poolMax: numberFromEnv("DB_POOL_MAX", 10),
+      poolMin: numberFromEnv("DB_POOL_MIN", 2),
+      poolIdleTimeoutMs: numberFromEnv("DB_POOL_IDLE_TIMEOUT_MS", 30_000),
+      poolAcquireTimeoutMs: numberFromEnv("DB_POOL_ACQUIRE_TIMEOUT_MS", 5_000),
+      statementTimeoutMs: numberFromEnv("DB_STATEMENT_TIMEOUT_MS", 30_000),
+      connectRetries: numberFromEnv("DB_CONNECT_RETRIES", 5),
+      connectRetryDelayMs: numberFromEnv("DB_CONNECT_RETRY_DELAY_MS", 1_000),
     },
-    redis: {
-      url: process.env.REDIS_URL || "redis://localhost:6379",
-    },
+    redis: { url: env.REDIS_URL ?? "redis://localhost:6379" },
     stellar: {
       network,
-      sorobanRpcUrl: process.env.SOROBAN_RPC_URL || selected.sorobanRpcUrl,
-      horizonUrl: selected.horizonUrl,
-      networkPassphrase: process.env.STELLAR_NETWORK_PASSPHRASE || selected.networkPassphrase,
-      poolContractId: networkSpecificPoolId || process.env.REFRACT_POOL_CONTRACT_ID || "",
-      policyContractId: networkSpecificPolicyId || process.env.REFRACT_POLICY_CONTRACT_ID || "",
-      oracleContractId: networkSpecificOracleId || process.env.REFRACT_ORACLE_CONTRACT_ID || "",
-      relayerSecret: process.env.ORACLE_RELAYER_SECRET || "",
-      relayerSecretId: process.env.ORACLE_RELAYER_SECRET_ID || "",
-      relayerSecretRegion: process.env.ORACLE_RELAYER_SECRET_REGION || "us-east-1",
-      validateOnChain: readBool(process.env.VALIDATE_ON_CHAIN, false),
-      requireNetwork: readBool(process.env.REQUIRE_NETWORK, false),
-      validateTimeoutMs: parseInt(process.env.VALIDATE_TIMEOUT_MS || "5000", 10),
+      sorobanRpcUrl: env.SOROBAN_RPC_URL || selectedNetwork.sorobanRpcUrl,
+      sorobanRpcUrls: (env.SOROBAN_RPC_URLS ?? env.SOROBAN_RPC_URL ?? selectedNetwork.sorobanRpcUrl)
+        .split(",")
+        .map((url) => url.trim())
+        .filter(Boolean),
+      eventStartLedger: numberFromEnv("EVENT_START_LEDGER", 1),
+      horizonUrl: selectedNetwork.horizonUrl,
+      networkPassphrase: env.STELLAR_NETWORK_PASSPHRASE || selectedNetwork.networkPassphrase,
+      poolContractId: env[`REFRACT_POOL_CONTRACT_ID_${suffix}`] ?? env.REFRACT_POOL_CONTRACT_ID ?? "",
+      policyContractId: env[`REFRACT_POLICY_CONTRACT_ID_${suffix}`] ?? env.REFRACT_POLICY_CONTRACT_ID ?? "",
+      oracleContractId: env[`REFRACT_ORACLE_CONTRACT_ID_${suffix}`] ?? env.REFRACT_ORACLE_CONTRACT_ID ?? "",
+      relayerSecret: env.ORACLE_RELAYER_SECRET ?? "",
+      relayerSecretId: env.ORACLE_RELAYER_SECRET_ID ?? "",
+      relayerSecretRegion: env.ORACLE_RELAYER_SECRET_REGION ?? "us-east-1",
+      validateOnChain: readBool(env.STELLAR_VALIDATE_ONCHAIN ?? env.VALIDATE_ON_CHAIN, false),
+      requireNetwork: readBool(env.STELLAR_REQUIRE_NETWORK ?? env.REQUIRE_NETWORK, false),
+      validateTimeoutMs: numberFromEnv("STELLAR_VALIDATE_TIMEOUT_MS", numberFromEnv("VALIDATE_TIMEOUT_MS", 5_000)),
       relayer: {
-        feeMultiplier: parseFloat(process.env.RELAYER_FEE_MULTIPLIER || "1.2"),
-        feeCeiling: parseInt(process.env.RELAYER_FEE_CEILING || "1000000", 10),
-        idleResyncMs: parseInt(process.env.RELAYER_IDLE_RESYNC_MS || "30000", 10),
-        minBalance: parseInt(process.env.RELAYER_MIN_BALANCE || "50000000", 10),
-        maxAttempts: parseInt(process.env.RELAYER_MAX_ATTEMPTS || "3", 10),
+        feeMultiplier: numberFromEnv("RELAYER_FEE_MULTIPLIER", 1.2),
+        feeCeiling: numberFromEnv("RELAYER_FEE_CEILING", 1_000_000),
+        idleResyncMs: numberFromEnv("RELAYER_IDLE_RESYNC_MS", 30_000),
+        minBalance: numberFromEnv("RELAYER_MIN_BALANCE", 50_000_000),
+        maxAttempts: numberFromEnv("RELAYER_MAX_ATTEMPTS", 3),
       },
       eventIndexer: {
-        enabled: readBool(process.env.EVENT_INDEXER_ENABLED, false),
-        pollIntervalMs: parseInt(process.env.EVENT_INDEXER_POLL_INTERVAL_MS || "5000", 10),
-        lagAlertLedgers: parseInt(process.env.EVENT_INDEXER_LAG_ALERT_LEDGERS || "100", 10),
-        pageLimit: parseInt(process.env.EVENT_INDEXER_PAGE_LIMIT || "100", 10),
+        enabled: readBool(env.EVENT_INDEXER_ENABLED, false),
+        pollIntervalMs: numberFromEnv("EVENT_INDEXER_POLL_INTERVAL_MS", 5_000),
+        lagAlertLedgers: numberFromEnv("EVENT_INDEXER_LAG_ALERT_LEDGERS", 100),
+        pageLimit: numberFromEnv("EVENT_INDEXER_PAGE_LIMIT", 100),
       },
     },
     confirmation: {
-      initialIntervalMs: parseInt(process.env.CONFIRMATION_INITIAL_INTERVAL_MS || "400", 10),
-      backoffMultiplier: parseFloat(process.env.CONFIRMATION_BACKOFF_MULTIPLIER || "1.8"),
-      maxIntervalMs: parseInt(process.env.CONFIRMATION_MAX_INTERVAL_MS || "8000", 10),
-      deadlineMs: parseInt(process.env.CONFIRMATION_DEADLINE_MS || "30000", 10),
-      jitterRatio: parseFloat(process.env.CONFIRMATION_JITTER_RATIO || "0.2"),
-      settlementDeadlineMs: parseInt(process.env.CONFIRMATION_SETTLEMENT_DEADLINE_MS || "90000", 10),
-      httpDeadlineMs: parseInt(process.env.CONFIRMATION_HTTP_DEADLINE_MS || "20000", 10),
+      initialIntervalMs: numberFromEnv("CONFIRMATION_INITIAL_INTERVAL_MS", 400),
+      backoffMultiplier: numberFromEnv("CONFIRMATION_BACKOFF_MULTIPLIER", 1.8),
+      maxIntervalMs: numberFromEnv("CONFIRMATION_MAX_INTERVAL_MS", 8_000),
+      deadlineMs: numberFromEnv("CONFIRMATION_DEADLINE_MS", 30_000),
+      jitterRatio: numberFromEnv("CONFIRMATION_JITTER_RATIO", 0.2),
+      settlementDeadlineMs: numberFromEnv("CONFIRMATION_SETTLEMENT_DEADLINE_MS", 90_000),
+      httpDeadlineMs: numberFromEnv("CONFIRMATION_HTTP_DEADLINE_MS", 20_000),
     },
     oraclePublish: {
-      mode: (process.env.ORACLE_PUBLISH_MODE as "every_poll" | "on_change") || "on_change",
-      minIntervalMs: parseInt(process.env.ORACLE_PUBLISH_MIN_INTERVAL_MS || "300000", 10),
+      mode: env.ORACLE_PUBLISH_MODE === "every_poll" ? "every_poll" : "on_change",
+      minIntervalMs: numberFromEnv("ORACLE_PUBLISH_MIN_INTERVAL_MS", 300_000),
     },
     oracles: {
-      coingeckoBaseUrl: process.env.COINGECKO_BASE_URL || "https://api.coingecko.com/api/v3",
-      horizonUrl: process.env.STELLAR_HORIZON_URL || selected.horizonUrl,
-      defiLlamaBaseUrl: process.env.DEFILLAMA_BASE_URL || "https://api.llama.fi",
+      coingeckoBaseUrl: env.COINGECKO_BASE_URL || "https://api.coingecko.com/api/v3",
+      horizonUrl: env.STELLAR_HORIZON_URL || selectedNetwork.horizonUrl,
+      defiLlamaBaseUrl: env.DEFILLAMA_BASE_URL || "https://api.llama.fi",
       // Placeholder "covered protocol" for the SmartContractRisk TVL-drop
       // check until Refract defines a real list of covered Soroban
       // protocols. Defaults to a large, consistently-tracked protocol so
       // the drop-detection logic has real data to run against.
-      defiLlamaProtocolSlug: process.env.DEFILLAMA_PROTOCOL_SLUG || "aave",
-      httpTimeoutMs: parseInt(process.env.ORACLE_HTTP_TIMEOUT_MS || "5000", 10),
-      feedLatencyBudgetsMs: parseFeedBudgets(process.env.ORACLE_FEED_LATENCY_BUDGETS_MS),
+      defiLlamaProtocolSlug: env.DEFILLAMA_PROTOCOL_SLUG || "aave",
+      httpTimeoutMs: numberFromEnv("ORACLE_HTTP_TIMEOUT_MS", 5_000),
+      feedLatencyBudgetsMs: parseFeedBudgets(env.ORACLE_FEED_LATENCY_BUDGETS_MS),
     },
     fees: {
-      statsTtlMs: parseInt(process.env.FEE_STATS_TTL_MS || "30000", 10),
-      ceilingStroops: process.env.FEE_CEILING_STROOPS || "10000000",
+      statsTtlMs: numberFromEnv("FEE_STATS_TTL_MS", 15_000),
+      ceilingStroops: env.FEE_CEILING_STROOPS || String(numberFromEnv("FEE_CEILING_STROOPS", 10_000_000)),
       profiles: {
         moderate: {
-          percentile: parseInt(process.env.FEE_MODERATE_PERCENTILE || "50", 10),
-          multiplier: parseFloat(process.env.FEE_MODERATE_MULTIPLIER || "1.2"),
+          percentile: numberFromEnv("FEE_MODERATE_PERCENTILE", 90),
+          multiplier: numberFromEnv("FEE_MODERATE_MULTIPLIER", 1.2),
         },
         aggressive: {
-          percentile: parseInt(process.env.FEE_AGGRESSIVE_PERCENTILE || "90", 10),
-          multiplier: parseFloat(process.env.FEE_AGGRESSIVE_MULTIPLIER || "1.5"),
+          percentile: numberFromEnv("FEE_AGGRESSIVE_PERCENTILE", 99),
+          multiplier: numberFromEnv("FEE_AGGRESSIVE_MULTIPLIER", 1.5),
         },
       },
     },
     eventIndexer: {
-      enabled: (process.env.EVENT_INDEXER_ENABLED || "false") === "true",
-      pollIntervalMs: parseInt(process.env.EVENT_INDEXER_POLL_INTERVAL_MS || "5000", 10),
-      lagAlertLedgers: parseInt(process.env.EVENT_INDEXER_LAG_ALERT_LEDGERS || "7200", 10),
-      pageLimit: parseInt(process.env.EVENT_INDEXER_PAGE_LIMIT || "200", 10),
-      contractId: process.env.REFRACT_POOL_CONTRACT_ID || "",
+      enabled: readBool(env.EVENT_INDEXER_ENABLED, false),
+      pollIntervalMs: numberFromEnv("EVENT_INDEXER_POLL_INTERVAL_MS", 5_000),
+      lagAlertLedgers: numberFromEnv("EVENT_INDEXER_LAG_ALERT_LEDGERS", 100),
+      pageLimit: numberFromEnv("EVENT_INDEXER_PAGE_LIMIT", 100),
+      contractId: env.REFRACT_POOL_CONTRACT_ID || "",
     },
     ops: {
-      apiToken: process.env.OPS_API_TOKEN || "",
-      communityApiKeys: parseCsv(process.env.COMMUNITY_API_KEYS),
+      apiToken: env.OPS_API_TOKEN || "",
+      communityApiKeys: parseCsv(env.COMMUNITY_API_KEYS),
     },
-    adminApiKey: process.env.ADMIN_API_KEY || "",
+    adminApiKey: env.ADMIN_API_KEY ?? "",
     communityApiKeys: [],
     throttle: {
-      upstream: {
-        ttl: parseInt(process.env.THROTTLE_UPSTREAM_TTL_MS || "60000", 10),
-        limit: parseInt(process.env.THROTTLE_UPSTREAM_LIMIT || "60", 10),
-      },
-      chain: {
-        ttl: parseInt(process.env.THROTTLE_CHAIN_TTL_MS || "60000", 10),
-        limit: parseInt(process.env.THROTTLE_CHAIN_LIMIT || "20", 10),
-      },
-      default: {
-        ttl: parseInt(process.env.THROTTLE_DEFAULT_TTL_MS || "60000", 10),
-        limit: parseInt(process.env.THROTTLE_DEFAULT_LIMIT || "600", 10),
-      },
-      catalog: {
-        ttl: parseInt(process.env.THROTTLE_CATALOG_TTL_MS || "60000", 10),
-        limit: parseInt(process.env.THROTTLE_CATALOG_LIMIT || "300", 10),
-      },
+      upstream: { ttl: 60_000, limit: 30 },
+      chain: { ttl: 60_000, limit: 10 },
+      default: { ttl: 60_000, limit: 100 },
+      catalog: { ttl: 60_000, limit: 200 },
     },
-    oracleTrustMode: parseTrustMode(process.env.ORACLE_TRUST_MODE),
-    policyPendingTtlMs: parseInt(process.env.POLICY_PENDING_TTL_MS || "3600000", 10),
+    oracleTrustMode: parseTrustMode(env.ORACLE_TRUST_MODE),
+    policyPendingTtlMs: numberFromEnv("POLICY_PENDING_TTL_MS", 3_600_000),
   };
 };
 

@@ -12,6 +12,7 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 import { AppConfig } from "../config/configuration";
+import { testStellarConfig } from "../config/test-stellar";
 import { MetricsService } from "../metrics/metrics.service";
 import { PolicyService } from "./policy.service";
 import { OracleTrustService } from "../oracle/oracle-trust.service";
@@ -21,17 +22,7 @@ const NETWORK_PASSPHRASE = "Test SDF Network ; September 2015";
 const POOL_CONTRACT_ID = StrKey.encodeContract(Buffer.alloc(32, 1));
 
 function buildConfig(overrides: Partial<AppConfig["stellar"]> = {}): ConfigService<AppConfig, true> {
-  const stellar: AppConfig["stellar"] = {
-    network: "testnet",
-    sorobanRpcUrl: "https://soroban-testnet.stellar.org",
-    horizonUrl: "https://horizon-testnet.stellar.org",
-    networkPassphrase: NETWORK_PASSPHRASE,
-    poolContractId: POOL_CONTRACT_ID,
-    policyContractId: "",
-    oracleContractId: "",
-    relayerSecret: "",
-    ...overrides,
-  };
+  const stellar = testStellarConfig({ poolContractId: POOL_CONTRACT_ID, ...overrides });
   return { get: jest.fn().mockReturnValue(stellar) } as unknown as ConfigService<AppConfig, true>;
 }
 
@@ -159,7 +150,7 @@ describe("PolicyService", () => {
       expect(diff).toBeLessThanOrEqual(1n);
     });
 
-    it("stores an active policy with the expected fields and an unsigned buy_policy invocation", async () => {
+    it("keeps the policy pending until its buy_policy transaction confirms", async () => {
       const dto = buildDto(holder, { coverageType: 2, durationDays: 10 });
       const beforeSeconds = Math.floor(Date.now() / 1000);
 
@@ -170,8 +161,10 @@ describe("PolicyService", () => {
       expect(policy.coverageTypeName).toBe("Liquidation Shield");
       expect(policy.coverageAmount).toBe(dto.coverageAmount);
       expect(policy.durationDays).toBe(10);
-      expect(policy.isActive).toBe(true);
+      expect(policy.isActive).toBe(false);
       expect(policy.expiresAt).toBeGreaterThanOrEqual(beforeSeconds + 10 * 86_400);
+      expect(service.findById(policy.id)).toBeUndefined();
+      expect(service.listActive()).toEqual([]);
       expect(message).toBe("Sign and submit to activate coverage");
 
       // The built tx must actually invoke RefractPool.buy_policy(holder,
@@ -189,9 +182,21 @@ describe("PolicyService", () => {
         duration_days: 10,
         trigger_threshold: 500n,
       });
+
+      const txHash = (TransactionBuilder.fromXDR(txXdr, NETWORK_PASSPHRASE) as Transaction).hash().toString("hex");
+      expect(service.activateFromBuyConfirmation(txHash, nativeToScVal(42n, { type: "u64" }))).toEqual({
+        onChainPolicyId: "42",
+      });
+      expect(service.findById("42")).toMatchObject({
+        holder,
+        coverageType: 2,
+        coverageAmount: dto.coverageAmount,
+        isActive: true,
+      });
+      expect(service.listActive().map((active) => active.id)).toContain("42");
     });
 
-    it("persists triggerParams so ClaimService can read them back for scanning (e.g. flight number)", async () => {
+    it("persists triggerParams after successful on-chain confirmation", async () => {
       // Flight Delay caps at 2,000 USDC — stay under it.
       const dto = buildDto(holder, {
         coverageType: 4,
@@ -199,16 +204,22 @@ describe("PolicyService", () => {
         triggerParams: { flightNumber: "BA249" },
       });
 
-      const { policy } = await service.buy(dto);
-      const stored = service.findById(policy.id);
+      const { txXdr } = await service.buy(dto);
+      const txHash = (TransactionBuilder.fromXDR(txXdr, NETWORK_PASSPHRASE) as Transaction).hash().toString("hex");
+      expect(service.listActive()).toEqual([]);
 
+      service.activateFromBuyConfirmation(txHash, nativeToScVal(7n, { type: "u64" }));
+      const stored = service.findById("7");
       expect(stored?.triggerParams).toEqual({ flightNumber: "BA249" });
     });
 
-    it("leaves triggerParams undefined when the buyer didn't supply any", async () => {
-      const { policy } = await service.buy(buildDto(holder, { coverageType: 0 }));
-
+    it("leaves triggerParams undefined after activation when the buyer didn't supply any", async () => {
+      const { policy, txXdr } = await service.buy(buildDto(holder, { coverageType: 0 }));
+      const txHash = (TransactionBuilder.fromXDR(txXdr, NETWORK_PASSPHRASE) as Transaction).hash().toString("hex");
+      service.activateFromBuyConfirmation(txHash, nativeToScVal(8n, { type: "u64" }));
       expect(policy.triggerParams).toBeUndefined();
+      expect(service.findById(policy.id)).toBeUndefined();
+      expect(service.findById("8")?.triggerParams).toBeUndefined();
     });
 
     it("rejects buying Flight Delay coverage without a flightNumber in triggerParams", async () => {
@@ -357,17 +368,29 @@ describe("PolicyService", () => {
   });
 
   describe("lookups and lifecycle", () => {
-    it("findById/findByHolder return a bought policy, and listActive drops it once deactivated", async () => {
-      const { policy } = await service.buy(buildDto(holder));
+    it("does not activate when a confirmation has no valid u64 policy id", async () => {
+      const { txXdr } = await service.buy(buildDto(holder));
+      const txHash = (TransactionBuilder.fromXDR(txXdr, NETWORK_PASSPHRASE) as Transaction).hash().toString("hex");
 
-      expect(service.findById(policy.id)).toEqual(policy);
-      expect(service.findByHolder(holder)).toEqual([policy]);
-      expect(service.listActive().map((p) => p.id)).toContain(policy.id);
+      expect(service.activateFromBuyConfirmation(txHash, nativeToScVal("42"))).toBeNull();
+      expect(service.listActive()).toEqual([]);
+      expect(service.findById("42")).toBeUndefined();
+    });
 
-      service.deactivate(policy.id);
+    it("findById/findByHolder return a confirmed policy, and listActive drops it once deactivated", async () => {
+      const { txXdr } = await service.buy(buildDto(holder));
+      const txHash = (TransactionBuilder.fromXDR(txXdr, NETWORK_PASSPHRASE) as Transaction).hash().toString("hex");
+      expect(service.findByHolder(holder)).toEqual([]);
 
-      expect(service.findById(policy.id)?.isActive).toBe(false);
-      expect(service.listActive().map((p) => p.id)).not.toContain(policy.id);
+      service.activateFromBuyConfirmation(txHash, nativeToScVal(9n, { type: "u64" }));
+      expect(service.findById("9")?.id).toBe("9");
+      expect(service.findByHolder(holder).map((p) => p.id)).toEqual(["9"]);
+      expect(service.listActive().map((p) => p.id)).toContain("9");
+
+      service.deactivate("9");
+
+      expect(service.findById("9")?.isActive).toBe(false);
+      expect(service.listActive().map((p) => p.id)).not.toContain("9");
     });
 
     it("findById returns undefined for an unknown id", () => {

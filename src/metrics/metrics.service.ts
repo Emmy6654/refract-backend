@@ -1,12 +1,14 @@
 import { Injectable } from "@nestjs/common";
-import { Counter, Histogram, Registry } from "@prometheus-io/client";
+import { Counter, Gauge, Histogram, Registry } from "@prometheus-io/client";
 import { NextFunction, Request, RequestHandler, Response } from "express";
+import type { RelayerMetricsSink } from "../stellar/relayer-monitor/relayer-balance-monitor.service";
+import { BalanceAssessment, FeeSpendSummary, tierRank } from "../stellar/relayer-monitor/relayer-balance.policy";
 
 type Outcome = "success" | "failure";
 type OracleOutcome = Outcome | "mocked";
 
 @Injectable()
-export class MetricsService {
+export class MetricsService implements RelayerMetricsSink {
   private readonly registry = new Registry();
   private readonly httpRequests = new Counter<"method" | "route" | "status_code">({
     name: "refract_http_requests_total",
@@ -75,6 +77,49 @@ export class MetricsService {
     registers: [this.registry],
   });
 
+  private readonly relayerBalance = new Gauge({
+    name: "refract_relayer_balance_stroops",
+    help: "Relayer native balance in stroops.",
+    registers: [this.registry],
+  });
+  private readonly relayerSpendable = new Gauge({
+    name: "refract_relayer_spendable_stroops",
+    help: "Relayer balance available for fees after reserve and liabilities, in stroops.",
+    registers: [this.registry],
+  });
+  private readonly relayerRunwayHours = new Gauge({
+    name: "refract_relayer_runway_hours",
+    help: "Hours of fees the relayer can still pay at the current spend rate (-1 when unknown).",
+    registers: [this.registry],
+  });
+  private readonly relayerRunwaySubmissions = new Gauge({
+    name: "refract_relayer_runway_submissions",
+    help: "Submissions the relayer can still pay for at the average fee (-1 when unknown).",
+    registers: [this.registry],
+  });
+  private readonly relayerFeeRate = new Gauge({
+    name: "refract_relayer_fee_spend_per_hour_stroops",
+    help: "Relayer fee spend per hour over the monitoring window, in stroops.",
+    registers: [this.registry],
+  });
+  private readonly relayerAlertTier = new Gauge({
+    name: "refract_relayer_alert_tier",
+    help: "Relayer balance alert tier: 0=ok, 1=warning, 2=critical, 3=exhausted.",
+    registers: [this.registry],
+  });
+  private readonly relayerFeesTotal = new Counter<"outcome">({
+    name: "refract_relayer_fees_paid_stroops_total",
+    help: "Fees charged to the relayer, in stroops, by transaction outcome.",
+    labelNames: ["outcome"],
+    registers: [this.registry],
+  });
+  private readonly relayerTxFee = new Histogram({
+    name: "refract_relayer_tx_fee_stroops",
+    help: "Fee charged per relayer-submitted transaction, in stroops.",
+    buckets: [100, 1_000, 10_000, 50_000, 100_000, 500_000, 1_000_000, 5_000_000, 10_000_000],
+    registers: [this.registry],
+  });
+
   readonly httpMiddleware: RequestHandler = (req: Request, res: Response, next: NextFunction): void => {
     if (req.path === "/metrics") {
       next();
@@ -114,6 +159,21 @@ export class MetricsService {
     const labels = { feed, stage };
     this.oracleDeadlineBreaches.labels(labels).inc();
     this.oracleDeadlineOverrun.labels(labels).observe(Math.max(0, overrunSeconds));
+  }
+
+  recordRelayerBalance(a: BalanceAssessment, spend: FeeSpendSummary): void {
+    this.relayerBalance.set(Number(a.balanceStroops));
+    this.relayerSpendable.set(Number(a.spendableStroops));
+    this.relayerRunwayHours.set(a.runwayHours ?? -1);
+    this.relayerRunwaySubmissions.set(a.runwaySubmissions ?? -1);
+    this.relayerFeeRate.set(spend.ratePerHourStroops);
+    this.relayerAlertTier.set(tierRank(a.tier));
+  }
+
+  recordRelayerFee(feeStroops: bigint, successful: boolean): void {
+    const fee = Number(feeStroops);
+    this.relayerFeesTotal.labels({ outcome: successful ? "success" : "failure" }).inc(fee);
+    this.relayerTxFee.observe(fee);
   }
 
   async observeSorobanRpc<T>(operation: string, call: () => Promise<T>): Promise<T> {

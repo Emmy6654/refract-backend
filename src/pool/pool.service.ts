@@ -312,6 +312,10 @@ export class PoolService {
     };
   }
 
+  async simulateProvide(dto: DepositDto) {
+    return this.provide(dto);
+  }
+
   async withdraw(dto: WithdrawDto) {
     const { provider, shares } = dto;
     const sharesBn = BigInt(shares);
@@ -353,6 +357,10 @@ export class PoolService {
       sharePrice: mockPool.sharePrice,
       txXdr,
     };
+  }
+
+  async simulateWithdraw(dto: WithdrawDto) {
+    return this.withdraw(dto);
   }
 
   getPremiumHistory(): PremiumHistoryEntry[] {

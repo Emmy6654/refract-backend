@@ -1,4 +1,5 @@
 import { Injectable, Logger, Optional } from "@nestjs/common";
+import { CacheService } from "../cache/cache.service";
 import { DbService } from "../db/db.service";
 import { OracleTrustService } from "../oracle/oracle-trust.service";
 import { SorobanRpcService } from "../stellar/soroban-rpc.service";
@@ -11,6 +12,8 @@ export class HealthService {
     @Optional() private readonly oracleTrust?: OracleTrustService,
     @Optional() private readonly rpcService?: SorobanRpcService,
     @Optional() private readonly dbService?: DbService,
+    @Optional() private readonly database?: DbService,
+    @Optional() private readonly cache?: CacheService,
   ) {}
 
   getLiveness(): { status: "ok" } {
@@ -29,21 +32,27 @@ export class HealthService {
     };
     trustMode: string;
     feeds: ReturnType<OracleTrustService["readiness"]>["feeds"];
+    dependencies: { postgres: boolean; redis: boolean };
   }> {
     const feedReadiness = this.oracleTrust?.readiness();
     const infrastructure = await this.getInfrastructureReadiness();
+    const [postgres, redis] = await Promise.all([
+      Promise.resolve(this.database?.isAvailable() ?? this.dbService?.isAvailable() ?? false),
+      this.cache ? this.cache.ping() : Promise.resolve(false),
+    ]);
     const checks = {
       sourcesReachable: feedReadiness?.sourcesReachable ?? false,
       quorumSatisfiable: feedReadiness?.quorumSatisfiable ?? false,
       ...infrastructure.checks,
     };
-    const ready = Object.values(checks).every(Boolean);
+    const ready = Object.values(checks).every(Boolean) && postgres && redis;
     return {
       ready,
       status: ready ? "ready" : "not_ready",
       checks,
       trustMode: feedReadiness?.trustMode ?? "strict",
       feeds: feedReadiness?.feeds ?? [],
+      dependencies: { postgres, redis },
     };
   }
 
@@ -73,7 +82,11 @@ export class HealthService {
     return {
       status: readiness.status,
       trustMode: readiness.trustMode,
-      dependencies: readiness.checks,
+      dependencies: {
+        ...readiness.checks,
+        postgres: this.database?.isAvailable() ?? this.dbService?.isAvailable() ?? false,
+        redis: this.cache ? this.cache.isConnected() : false,
+      },
       feeds: readiness.feeds,
     };
   }

@@ -1,5 +1,6 @@
 import { Injectable, Logger, Optional } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { randomUUID } from "node:crypto";
 import axios from "axios";
 import { CacheService, ORACLE_TTL } from "../cache/cache.service";
 import { AppConfig } from "../config/configuration";
@@ -151,12 +152,15 @@ export class OracleService {
         : "low";
 
       return this.withFeedTiming({
+        readingId: randomUUID(),
         coverageType: "StablecoinDepeg",
         type: "oracle_update",
         value: usdcPrice,
         threshold,
         severity,
         message: `USDC price: $${usdcPrice.toFixed(4)} (${deviation > 0 ? "-" : "+"}${Math.abs(deviation).toFixed(3)}% from peg) [CoinGecko]`,
+        source: "coingecko",
+        timestamp: Math.floor(Date.now() / 1000),
       }, "coingecko-usdc", startedAt, observedAt);
     } catch (err) {
       return this.degraded("StablecoinDepeg", threshold, "CoinGecko", err);
@@ -204,12 +208,15 @@ export class OracleService {
         : " [CoinGecko]";
 
       return this.withFeedTiming({
+        readingId: randomUUID(),
         coverageType: "MarketCrash",
         type: "oracle_update",
         value: change24h,
         threshold,
         severity,
         message: `XLM 24h change: ${change24h.toFixed(2)}% (trigger at ${threshold}%)${chainContext}`,
+        source: "coingecko",
+        timestamp: Math.floor(Date.now() / 1000),
       }, "coingecko-stellar", startedAt, priceRes.observedAt);
     } catch (err) {
       return this.degraded("MarketCrash", threshold, "CoinGecko", err);
@@ -251,12 +258,15 @@ export class OracleService {
         : "low";
 
       return this.withFeedTiming({
+        readingId: randomUUID(),
         coverageType: "SmartContractRisk",
         type: "oracle_update",
         value: pctChange,
         threshold,
         severity,
         message: `${data.name ?? this.defiLlamaProtocolSlug} TVL 24h change: ${pctChange.toFixed(2)}% (trigger at ${threshold}%) [DeFiLlama]`,
+        source: "defillama",
+        timestamp: Math.floor(Date.now() / 1000),
       }, "defillama-aave", startedAt, observedAt);
     } catch (err) {
       return this.degraded("SmartContractRisk", threshold, "DeFiLlama", err);
@@ -279,12 +289,15 @@ export class OracleService {
     });
 
     return this.withFeedTiming({
+      readingId: randomUUID(),
       coverageType: "LiquidationShield",
       type: "oracle_update",
       value: collateralRatio,
       threshold,
       severity: collateralRatio < threshold ? "triggered" : "low",
       message: `Collateral ratio ${(collateralRatio * 100).toFixed(1)}% (shield triggers below ${(threshold * 100).toFixed(0)}%) [mocked — no NEXUS Protocol integration]`,
+      source: "mock",
+      timestamp: Math.floor(Date.now() / 1000),
       degraded: true,
     }, "nexus-liquidations", Date.now());
   }
@@ -303,12 +316,15 @@ export class OracleService {
     });
 
     return this.withFeedTiming({
+      readingId: randomUUID(),
       coverageType: "FlightDelay",
       type: "oracle_update",
       value: delayMinutes,
       threshold,
       severity: delayMinutes >= threshold ? "triggered" : "low",
       message: `Flight ${flightNumber}: ${delayMinutes}m delay (trigger at ${threshold}m) [mocked — AviationStack requires a paid key]`,
+      source: "mock",
+      timestamp: Math.floor(Date.now() / 1000),
       degraded: true,
     }, "aviationstack", Date.now());
   }
@@ -342,6 +358,7 @@ export class OracleService {
       err instanceof Error ? err.message : String(err)
     );
     return {
+      readingId: randomUUID(),
       coverageType,
       type: "oracle_update",
       value: threshold,
@@ -349,6 +366,8 @@ export class OracleService {
       severity: "low",
       message: `${source} unavailable — degraded to a non-triggering reading`,
       feedId: feedIdForCoverage(coverageType),
+      source: source.toLowerCase(),
+      timestamp: Math.floor(Date.now() / 1000),
       degraded: true,
     };
   }

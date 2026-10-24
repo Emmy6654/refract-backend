@@ -1,11 +1,13 @@
 import { Module, Provider } from "@nestjs/common";
 import { ConfigModule, ConfigService } from "@nestjs/config";
 
+import { DbModule } from "../db/db.module";
 import { StellarModule } from "../stellar/stellar.module";
 import { MetricsModule } from "../metrics/metrics.module";
 import { OracleTrustModule } from "./oracle-trust.module";
 import { HealthModule } from "../health/health.module";
 import { OracleController } from "./oracle.controller";
+import { OracleEventRepository } from "./oracle-event.repository";
 import { OracleGateway } from "./oracle.gateway";
 import { OraclePublisherService } from "./oracle-publisher.service";
 import { OracleScheduler } from "./oracle.scheduler";
@@ -76,6 +78,7 @@ const attestationVerifierProvider: Provider = {
 @Module({
   imports: [
     ConfigModule,
+    DbModule,
     StellarModule,
     MetricsModule,
     OracleTrustModule,
@@ -106,6 +109,7 @@ const attestationVerifierProvider: Provider = {
     OracleService,
     OracleMonitorService,
     FreshnessEnforcementService,
+    OracleEventRepository,
 
     // Gateway, scheduler & publisher
     OracleGateway,
@@ -126,6 +130,7 @@ const attestationVerifierProvider: Provider = {
     AttestationPolicyService,
     AttestationTierService,
     SourceIndependenceService,
+    OracleEventRepository,
     OracleGateway,
     OraclePublisherService,
   ],

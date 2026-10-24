@@ -144,7 +144,11 @@ const COVERAGE_TYPES: CoverageTypeCatalogEntry[] = [
 
 @Injectable()
 export class PolicyService {
+  // In-memory store — only confirmed on-chain policies are exposed to claim
+  // scans and lookups.
   private readonly policies = new Map<string, StoredPolicy>();
+  private readonly pendingBuys = new Map<string, StoredPolicy>();
+
   private readonly server: rpc.Server;
   private readonly networkPassphrase: string;
   private readonly poolContractId: string;
@@ -220,24 +224,41 @@ export class PolicyService {
     }
   }
 
-  async onChainCoverageBounds(): Promise<{ minCoverage: bigint; maxCoverage: bigint } | null> {
-    if (!this.poolContractId) {
-      return null;
-    }
+  /**
+   * Reads RefractPool.pool_config()'s min_coverage/max_coverage via
+   * simulation — no signature or submission, this never changes state.
+   * Returns null if the pool contract isn't configured or hasn't been
+   * initialized on-chain yet (pool_config() itself returns None then).
+   *
+   * The pool enforces ONE global min/max coverage across every coverage
+   * type (see _check_coverage_capacity in pool/src/lib.rs) — there's no
+   * per-type bound on-chain, unlike COVERAGE_TYPES' maxCoverage below,
+   * which is this catalog's own (stricter, per-type) product policy. Both
+   * checks apply: the catalog caps what buy() will offer per type, this
+   * catches the case where that per-type cap is still above whatever the
+   * pool is actually configured to allow right now — e.g. after an admin
+   * calls set_pool_config() — which the catalog alone can't see.
+   *
+   * pool_config() is a stateless view with no caller-specific args, so
+   * when no holder is supplied the source account only needs to be
+   * well-formed for the tx envelope — it never touches the network,
+   * unlike getAccount().
+   */
+  async onChainCoverageBounds(holder?: string): Promise<{ minCoverage: bigint; maxCoverage: bigint } | null> {
+    if (!this.poolContractId) return null;
+
     try {
-      // pool_config() is a stateless view with no caller-specific args, so
-      // the source account only needs to be well-formed for the tx
-      // envelope — it never touches the network, unlike getAccount().
-      const dummySource = new Account(Keypair.random().publicKey(), "0");
-      const contract = new Contract(this.poolContractId);
-      const tx = new TransactionBuilder(dummySource, {
+      const sourceAccount = holder
+        ? await this.server.getAccount(holder)
+        : new Account(Keypair.random().publicKey(), "0");
+      const operation = new Contract(this.poolContractId).call("pool_config");
+      const tx = new TransactionBuilder(sourceAccount, {
         fee: BASE_FEE,
         networkPassphrase: this.networkPassphrase,
       })
-        .addOperation(contract.call("pool_config"))
+        .addOperation(operation)
         .setTimeout(30)
         .build();
-
       const sim = await this.metricsService.observeSorobanRpc("simulate_transaction", () =>
         this.server.simulateTransaction(tx)
       );
@@ -281,6 +302,12 @@ export class PolicyService {
     return [...this.policies.values()].filter((p) => p.isActive && p.expiresAt > now);
   }
 
+  getExpiredActive(): StoredPolicy[] {
+    const now = Math.floor(Date.now() / 1000);
+    return [...this.policies.values()].filter((policy) => policy.isActive && policy.expiresAt <= now);
+  }
+
+  /** Marks a policy inactive after a claim has been paid out. */
   deactivate(id: string): void {
     const policy = this.policies.get(id);
     if (policy) {
@@ -289,78 +316,59 @@ export class PolicyService {
     }
   }
 
-  async simulateBuy(dto: BuyPolicyDto): Promise<{ policy: StoredPolicy; txXdr: string; message: string }> {
-    const { holder, coverageType, coverageAmount, durationDays, triggerParams } = dto;
+  /**
+   * Activates a policy only after TxService has observed a successful
+   * buy_policy transaction. Transaction hashes link the confirmation to the
+   * metadata used to build that exact unsigned buy invocation.
+   */
+  activateFromBuyConfirmation(
+    txHash: string,
+    returnValue?: xdr.ScVal
+  ): { onChainPolicyId: string } | null {
+    const pending = this.pendingBuys.get(txHash);
+    if (!pending) return null;
 
-    const catalogEntry = COVERAGE_TYPES[coverageType];
-    if (!catalogEntry) {
-      throw new BadRequestException({
-        error: `coverageType must be between 0 and ${COVERAGE_TYPES.length - 1}`,
-      });
+    this.pendingBuys.delete(txHash);
+    if (!returnValue || returnValue.switch().name !== "scvU64") return null;
+
+    let policyId: string;
+    try {
+      const decoded = scValToNative(returnValue);
+      if (typeof decoded === "bigint") {
+        policyId = decoded.toString();
+      } else if (typeof decoded === "number" && Number.isSafeInteger(decoded) && decoded >= 0) {
+        policyId = decoded.toString();
+      } else if (typeof decoded === "string" && /^\d+$/.test(decoded)) {
+        policyId = decoded;
+      } else {
+        return null;
+      }
+    } catch {
+      return null;
     }
 
-    if (coverageType === FLIGHT_DELAY_COVERAGE_TYPE && typeof triggerParams?.flightNumber !== "string") {
-      throw new BadRequestException({
-        error: "Flight Delay coverage requires triggerParams.flightNumber",
-      });
+    if (BigInt(policyId) > 18_446_744_073_709_551_615n || this.policies.has(policyId)) {
+      return null;
     }
 
-    const coverage = BigInt(coverageAmount);
-    if (coverage <= 0n) {
-      throw new BadRequestException({ error: "coverageAmount must be greater than zero" });
-    }
-
-    const maxCoverage = catalogEntry.maxCoverage;
-    if (coverage > BigInt(maxCoverage) * 10_000_000n) {
-      throw new BadRequestException({
-        error: `coverageAmount exceeds the ${COVERAGE_NAMES[coverageType]} maximum of ${maxCoverage} USDC`,
-        maxCoverage,
-      });
-    }
-
-    const bounds = await this.onChainCoverageBounds();
-    if (bounds && (coverage < bounds.minCoverage || coverage > bounds.maxCoverage)) {
-      throw new BadRequestException({
-        error: `coverageAmount must be between ${bounds.minCoverage} and ${bounds.maxCoverage} (pool contract units) per the pool's current configuration`,
-        minCoverage: bounds.minCoverage.toString(),
-        maxCoverage: bounds.maxCoverage.toString(),
-      });
-    }
-
-    const multiplier = RISK_MULTIPLIERS[coverageType];
-    const annualRate = (this.baseRateBps() / 10_000) * multiplier;
-    const dailyRate = annualRate / 365;
-    const premiumFraction = dailyRate * durationDays;
-    const premium = BigInt(Math.floor(Number(coverage) * premiumFraction));
-
-    const policyId = uuidv4();
-    const expiresAt = Math.floor(Date.now() / 1000) + durationDays * 86_400;
-    const policy: StoredPolicy = {
-      id: policyId,
-      holder,
-      coverageType,
-      coverageTypeName: COVERAGE_NAMES[coverageType],
-      coverageAmount,
-      premium: premium.toString(),
-      durationDays,
-      expiresAt,
-      isActive: true,
-      createdAt: new Date().toISOString(),
-      triggerParams,
-    };
-
-    const paramsScVal = this.buildPolicyParamsScVal(
-      coverageType,
-      coverage,
-      durationDays,
-      TRIGGER_THRESHOLDS[coverageType]
-    );
-    const txXdr = await this.buildUnsignedBuyInvoke(holder, paramsScVal);
-
-    return { policy, txXdr, message: "Preview purchase" };
+    const policy = { ...pending, id: policyId, isActive: true };
+    this.policies.set(policyId, policy);
+    return { onChainPolicyId: policyId };
   }
 
   async buy(dto: BuyPolicyDto): Promise<{ policy: StoredPolicy; txXdr: string; message: string }> {
+    return this.buildBuy(dto, true);
+  }
+
+  async simulateBuy(dto: BuyPolicyDto): Promise<{ valid: true; policy: StoredPolicy; txXdr: string; message: string }> {
+    const result = await this.buildBuy(dto, false);
+    return { valid: true, ...result };
+  }
+
+  private async buildBuy(
+    dto: BuyPolicyDto,
+    storePolicy: boolean
+  ): Promise<{ policy: StoredPolicy; txXdr: string; message: string }> {
     const { holder, coverageType, coverageAmount, durationDays, triggerParams } = dto;
 
     const catalogEntry = COVERAGE_TYPES[coverageType];
@@ -400,7 +408,13 @@ export class PolicyService {
       });
     }
 
-    const bounds = await this.onChainCoverageBounds();
+    // The catalog check above is this service's own per-type policy, but
+    // the pool enforces a single global bound across every type (see
+    // onChainCoverageBounds' doc comment) — one that could be far tighter
+    // (or, after a set_pool_config() change, looser) than what the catalog
+    // advertises. Catch a mismatch here with a specific error instead of
+    // letting buildUnsignedBuyInvoke's simulation fail it opaquely.
+    const bounds = await this.onChainCoverageBounds(holder);
     if (bounds && (coverage < bounds.minCoverage || coverage > bounds.maxCoverage)) {
       throw new BadRequestException({
         error: `coverageAmount must be between ${bounds.minCoverage} and ${bounds.maxCoverage} (pool contract units) per the pool's current configuration`,
@@ -415,8 +429,8 @@ export class PolicyService {
     const premiumFraction = dailyRate * durationDays;
     const premium = BigInt(Math.floor(Number(coverage) * premiumFraction));
 
-    const policyId = uuidv4();
-    const expiresAt = Math.floor(Date.now() / 1000) + durationDays * 86_400;
+    const policyId = randomUUID();
+    const expiresAt = Math.floor(Date.now() / 1000) + durationDays * 86400;
 
     const policy: StoredPolicy = {
       id: policyId,
@@ -427,12 +441,10 @@ export class PolicyService {
       premium: premium.toString(),
       durationDays,
       expiresAt,
-      isActive: true,
+      isActive: false,
       createdAt: new Date().toISOString(),
       triggerParams,
     };
-
-    this.policies.set(policyId, policy);
 
     const paramsScVal = this.buildPolicyParamsScVal(
       coverageType,
@@ -441,6 +453,10 @@ export class PolicyService {
       TRIGGER_THRESHOLDS[coverageType]
     );
     const txXdr = await this.buildUnsignedBuyInvoke(holder, paramsScVal);
+    if (storePolicy) {
+      const tx = TransactionBuilder.fromXDR(txXdr, this.networkPassphrase);
+      this.pendingBuys.set(tx.hash().toString("hex"), policy);
+    }
 
     return { policy, txXdr, message: "Sign and submit to activate coverage" };
   }
