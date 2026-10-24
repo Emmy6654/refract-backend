@@ -4,6 +4,7 @@ import { ClaimService } from './claim.service';
 import { ProtocolParametersService } from '../parameters/protocol-parameters.service';
 import { runsPipeline } from '../runtime/process-role';
 import { PipelineHeartbeat } from '../runtime/pipeline-heartbeat';
+import { LeaderElector } from '../leader/leader-elector.service';
 
 export const CLAIM_PIPELINE_STAGE = 'claim-settlement';
 
@@ -46,6 +47,7 @@ export class ClaimScheduler implements OnModuleInit, OnApplicationShutdown {
     private readonly claimService: ClaimService,
     private readonly protocolParameters: ProtocolParametersService,
     @Optional() private readonly heartbeat?: PipelineHeartbeat,
+    private readonly leaderElector: LeaderElector,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -81,6 +83,11 @@ export class ClaimScheduler implements OnModuleInit, OnApplicationShutdown {
       this.logger.log(
         'Skipping claim settlement run: scheduler is shutting down.',
       );
+      return;
+    }
+
+    if (!this.leaderElector.isLeader()) {
+      this.logger.debug('Skipping claim settlement run: this instance is not the leader.');
       return;
     }
 

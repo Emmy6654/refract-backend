@@ -4,6 +4,11 @@
   "description": "Refract Protocol backend \u2014 oracle monitoring, claim processing, premium quoting",
   "main": "dist/main.js",
   "private": true,
+  "workspaces": [
+    "refract-backend",
+    "refract-frontend",
+    "refract-contracts"
+  ],
   "scripts": {
     "build": "nest build",
     "start": "nest start",
@@ -20,11 +25,20 @@
     "test:cov": "jest --coverage",
     "test:property": "jest --testRegex '.*\\.property\\.spec\\.ts$'",
     "test:integration": "jest --config test/integration/jest.integration.config.ts --runInBand",
+    "test:unit": "npm run test --workspaces --if-present",
+    "test:contracts": "node test/contracts/verify.js",
+    "test:contracts:update": "node test/contracts/verify.js --update",
+    "attack-cost": "node scripts/attack-cost.js",
+    "attack-cost:reference": "node scripts/attack-cost.js --fixture test/fixtures/attack-cost/reference.json",
+    "ci": "npm run lint && npm run test",
     "migrate:up": "node-pg-migrate up --migrations-dir migrations --config-file database.json",
     "migrate:down": "node-pg-migrate down --migrations-dir migrations --config-file database.json",
     "migrate:create": "node-pg-migrate create --migrations-dir migrations --config-file database.json",
     "migrate:status": "node-pg-migrate status --migrations-dir migrations --config-file database.json",
     "regenerate:xdr-fixtures": "ts-node scripts/regenerate-xdr-fixtures.ts"
+  },
+  "engines": {
+    "node": ">=18"
   },
   "dependencies": {
     "@aws-sdk/client-secrets-manager": "^3.1142.0",
@@ -35,6 +49,7 @@
     "@nestjs/platform-ws": "^11.1.28",
     "@nestjs/schedule": "^6.1.3",
     "@nestjs/swagger": "^11.4.7",
+    "@nestjs/throttler": "^6.0.0",
     "@nestjs/websockets": "^11.1.28",
     "@prometheus-io/client": "^0.16.1",
     "@stellar/stellar-sdk": "^16.3.0",
@@ -80,13 +95,15 @@
     "typescript": "^5.3.2"
   },
   "jest": {
+    "preset": "ts-jest",
+    "testEnvironment": "node",
+    "rootDir": "src",
+    "testRegex": ".*\\.spec\\.ts$",
     "moduleFileExtensions": [
       "js",
       "json",
       "ts"
     ],
-    "rootDir": "src",
-    "testRegex": ".*\\.spec\\.ts$",
     "transform": {
       "^.+\\.ts$": "ts-jest",
       "^.+\\.js$": [
@@ -104,7 +121,6 @@
     "collectCoverageFrom": [
       "**/*.(t|j)s"
     ],
-    "coverageDirectory": "../coverage",
-    "testEnvironment": "node"
+    "coverageDirectory": "../coverage"
   }
 }
