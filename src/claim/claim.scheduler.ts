@@ -50,26 +50,43 @@ export class ClaimScheduler implements OnModuleInit, OnApplicationShutdown {
     this.logger.log(`Claim scheduler initialized with interval ${interval}s`);
   }
 
-  async onApplicationShutdown(): Promise<void> {
+  async onApplicationShutdown(signal?: string): Promise<void> {
     this.shuttingDown = true;
-    if (!this.inFlight) {
-      return;
+
+    this.logger.log(
+      `ClaimScheduler shutdown (${signal ?? 'unknown'}): waiting up to ${SHUTDOWN_DRAIN_TIMEOUT_MS}ms for in-flight settlement run to finish.`,
+    );
+
+    const drained = await this.waitForInFlight();
+
+    if (drained) {
+      this.logger.log('In-flight settlement run completed cleanly.');
+    } else {
+      this.logger.warn(
+        `In-flight settlement run did not finish within ${SHUTDOWN_DRAIN_TIMEOUT_MS}ms; proceeding with shutdown. The run may be interrupted.`,
+      );
+    }
+  }
+
+  private waitForInFlight(): Promise<boolean> {
+    const run = this.inFlight;
+    if (!run) {
+      return Promise.resolve(true);
     }
 
-    this.logger.log('Waiting for in-flight claim settlement run to drain...');
-    const timeout = new Promise<void>((resolve) => {
-      const timer = setTimeout(() => {
-        this.logger.warn(
-          `In-flight claim settlement run did not finish within ${SHUTDOWN_DRAIN_TIMEOUT_MS}ms; proceeding with shutdown.`,
-        );
-        resolve();
-      }, SHUTDOWN_DRAIN_TIMEOUT_MS);
+    return new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => resolve(false), SHUTDOWN_DRAIN_TIMEOUT_MS);
       if (typeof timer.unref === 'function') {
         timer.unref();
       }
-    });
 
-    await Promise.race([this.inFlight, timeout]);
+      run
+        .catch(() => undefined)
+        .then(() => {
+          clearTimeout(timer);
+          resolve(true);
+        });
+    });
   }
 
   /**
