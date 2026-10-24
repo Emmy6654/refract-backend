@@ -119,5 +119,26 @@ export default (): AppConfig => {
       defiLlamaProtocolSlug: env.DEFILLAMA_PROTOCOL_SLUG ?? "aave",
       httpTimeoutMs: env.ORACLE_HTTP_TIMEOUT_MS ?? 5000,
     },
+    throttle: {
+      tiers: {
+        strict: {
+          limit: env.THROTTLE_STRICT_LIMIT ?? 10,
+          ttl: env.THROTTLE_STRICT_TTL_MS ?? 60_000,
+        },
+        chainWrite: {
+          limit: env.THROTTLE_CHAIN_WRITE_LIMIT ?? 5,
+          ttl: env.THROTTLE_CHAIN_WRITE_TTL_MS ?? 60_000,
+        },
+        moderate: {
+          limit: env.THROTTLE_MODERATE_LIMIT ?? 60,
+          ttl: env.THROTTLE_MODERATE_TTL_MS ?? 60_000,
+        },
+        generous: {
+          limit: env.THROTTLE_GENEROUS_LIMIT ?? 120,
+          ttl: env.THROTTLE_GENEROUS_TTL_MS ?? 60_000,
+        },
+      },
+      trustProxy: env.TRUST_PROXY === true,
+    },
   };
 };
