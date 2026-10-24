@@ -57,33 +57,6 @@ export const isSandboxMode = (): boolean =>
       isGlobal: true,
       load: [configuration],
     }),
-    ThrottlerModule.forRootAsync({
-      inject: [ConfigService],
-      useFactory: (config: ConfigService<AppConfig, true>) => ({
-        throttlers: [
-          {
-            name: 'upstream',
-            ttl: config.get('throttle.upstream.ttl', { infer: true }),
-            limit: config.get('throttle.upstream.limit', { infer: true }),
-          },
-          {
-            name: 'chain',
-            ttl: config.get('throttle.chain.ttl', { infer: true }),
-            limit: config.get('throttle.chain.limit', { infer: true }),
-          },
-          {
-            name: 'default',
-            ttl: config.get('throttle.default.ttl', { infer: true }),
-            limit: config.get('throttle.default.limit', { infer: true }),
-          },
-          {
-            name: 'catalog',
-            ttl: config.get('throttle.catalog.ttl', { infer: true }),
-            limit: config.get('throttle.catalog.limit', { infer: true }),
-          },
-        ],
-      }),
-    }),
     ScheduleModule.forRoot(),
     // In sandbox mode we skip the real Postgres connection entirely so
     // `npm run dev` works right after `npm install` with no other setup.
@@ -106,7 +79,6 @@ export const isSandboxMode = (): boolean =>
     StellarModule,
     DbModule,
     HealthModule,
-    AuthModule,
     QuoteModule,
     PolicyModule,
     PoolModule,
@@ -149,51 +121,4 @@ export const isSandboxMode = (): boolean =>
     },
   ],
 })
-export class AppModule implements OnModuleInit, OnApplicationShutdown {
-  private readonly logger = new Logger(AppModule.name);
-
-  constructor(private readonly configService: ConfigService) {}
-
-  onModuleInit(): void {
-    if (!isSandboxMode()) {
-      return;
-    }
-
-    const nodeEnv = (
-      this.configService.get<string>('NODE_ENV') ??
-      process.env.NODE_ENV ??
-      ''
-    ).toLowerCase();
-
-    // Boot-time safety check: sandbox mode is a local-only onboarding tool
-    // and must never be reachable from a production-configured deployment.
-    if (nodeEnv === 'production') {
-      throw new Error(
-        'SANDBOX_MODE=true is not allowed when NODE_ENV=production. ' +
-          'Sandbox mode is a local contributor-onboarding tool only.',
-      );
-    }
-
-    this.logger.warn(
-      '============================================================',
-    );
-    this.logger.warn(
-      '  SANDBOX MODE ENABLED — NOT A REAL ENVIRONMENT',
-    );
-    this.logger.warn(
-      '  Postgres, Redis, and Soroban RPC are replaced with in-memory',
-    );
-    this.logger.warn(
-      '  mocks. All data resets on restart. Do not use outside local dev.',
-    );
-    this.logger.warn(
-      '============================================================',
-    );
-  }
-
-  async onApplicationShutdown(signal?: string): Promise<void> {
-    this.logger.log(
-      `Application shutdown initiated${signal ? ` (signal: ${signal})` : ''} — draining schedulers and connection pools`,
-    );
-  }
-}
+export class AppModule {}

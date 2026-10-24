@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnApplicationShutdown, OnModuleInit, Optional } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { ClaimService } from './claim.service';
+import { ClaimService, ScanOutcome } from './claim.service';
 import { ProtocolParametersService } from '../parameters/protocol-parameters.service';
 import { runsPipeline } from '../runtime/process-role';
 import { PipelineHeartbeat } from '../runtime/pipeline-heartbeat';
@@ -29,7 +29,7 @@ export const CLAIM_SCHEDULER_INTERVAL_KEY = 'scheduler.claim.interval_seconds';
 
 @Injectable()
 export class ClaimScheduler implements OnModuleInit, OnApplicationShutdown {
-  private readonly logger = new Logger(ClaimScheduler.name);
+  readonly logger = new Logger(ClaimScheduler.name);
 
   /**
    * Tracks the currently executing settlement run so shutdown can wait for it
@@ -58,6 +58,49 @@ export class ClaimScheduler implements OnModuleInit, OnApplicationShutdown {
     this.heartbeat?.expect(CLAIM_PIPELINE_STAGE);
     const interval = await this.getIntervalSeconds();
     this.logger.log(`Claim scheduler initialized with interval ${interval}s`);
+  }
+
+  async onApplicationShutdown(signal?: string): Promise<void> {
+    this.shuttingDown = true;
+
+    if (!this.inFlight) {
+      return;
+    }
+
+    this.logger.log(
+      `ClaimScheduler shutdown (${signal ?? 'unknown'}): waiting up to ${SHUTDOWN_DRAIN_TIMEOUT_MS}ms for in-flight settlement run to finish.`,
+    );
+
+    const drained = await this.waitForInFlight();
+
+    if (drained) {
+      this.logger.log('In-flight settlement run completed cleanly.');
+    } else {
+      this.logger.warn(
+        `In-flight settlement run did not finish within ${SHUTDOWN_DRAIN_TIMEOUT_MS}ms; proceeding with shutdown. The run may be interrupted.`,
+      );
+    }
+  }
+
+  private waitForInFlight(): Promise<boolean> {
+    const run = this.inFlight;
+    if (!run) {
+      return Promise.resolve(true);
+    }
+
+    return new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => resolve(false), SHUTDOWN_DRAIN_TIMEOUT_MS);
+      if (typeof timer.unref === 'function') {
+        timer.unref();
+      }
+
+      run
+        .catch(() => undefined)
+        .then(() => {
+          clearTimeout(timer);
+          resolve(true);
+        });
+    });
   }
 
   /**
@@ -103,7 +146,6 @@ export class ClaimScheduler implements OnModuleInit, OnApplicationShutdown {
 
     const run = this.runSettlement();
     this.inFlight = run;
-
     try {
       await run;
     } finally {
@@ -114,62 +156,22 @@ export class ClaimScheduler implements OnModuleInit, OnApplicationShutdown {
   }
 
   private async runSettlement(): Promise<void> {
+    await this.scanAndSettle();
+  }
+
+  async scanAndSettle(): Promise<void> {
     try {
-      await this.claimService.settleClaims();
+      const outcome: ScanOutcome = await this.claimService.processTriggeredWithStats();
+      const { counts } = outcome;
+      this.logger.log(
+        `claim scan: scanned=${counts.scanned} triggered=${counts.triggered} settled=${counts.settled} deferred=${counts.deferred} transient=${counts.failedTransient} permanent=${counts.failedPermanent} indeterminate=${counts.failedIndeterminate} deadLettered=${counts.deadLettered}`
+      );
+      if (outcome.settled.length > 0) {
+        this.logger.log(`Settled ${outcome.settled.length} claims this cycle`);
+      }
       this.heartbeat?.beat(CLAIM_PIPELINE_STAGE);
     } catch (error) {
-      this.logger.error(
-        'Claim settlement run failed.',
-        error instanceof Error ? error.stack : String(error),
-      );
+      this.logger.error("Claim scan failed", error instanceof Error ? error.stack : String(error));
     }
-  }
-
-  /**
-   * Called by Nest during graceful shutdown. Stops new runs from starting and
-   * waits (bounded) for the current settlement run to finish so we never
-   * interrupt a mid-flight settlement.
-   */
-  async onApplicationShutdown(signal?: string): Promise<void> {
-    this.shuttingDown = true;
-
-    if (!this.inFlight) {
-      this.logger.log(
-        `ClaimScheduler shutdown (${signal ?? 'unknown'}): no in-flight settlement run.`,
-      );
-      return;
-    }
-
-    this.logger.log(
-      `ClaimScheduler shutdown (${signal ?? 'unknown'}): waiting up to ${SHUTDOWN_DRAIN_TIMEOUT_MS}ms for in-flight settlement run to finish.`,
-    );
-
-    const drained = await this.waitForInFlight();
-
-    if (drained) {
-      this.logger.log('In-flight settlement run completed cleanly.');
-    } else {
-      this.logger.warn(
-        `In-flight settlement run did not finish within ${SHUTDOWN_DRAIN_TIMEOUT_MS}ms; proceeding with shutdown. The run may be interrupted.`,
-      );
-    }
-  }
-
-  private waitForInFlight(): Promise<boolean> {
-    const run = this.inFlight;
-    if (!run) {
-      return Promise.resolve(true);
-    }
-
-    return new Promise<boolean>((resolve) => {
-      const timer = setTimeout(() => resolve(false), SHUTDOWN_DRAIN_TIMEOUT_MS);
-
-      run
-        .catch(() => undefined)
-        .then(() => {
-          clearTimeout(timer);
-          resolve(true);
-        });
-    });
   }
 }
