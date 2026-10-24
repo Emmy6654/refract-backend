@@ -2,7 +2,16 @@ export type FeeProfileName = "moderate" | "aggressive";
 
 /**
  * Typed application configuration, loaded once by Nest's ConfigModule.
+ *
+ * Kept as a single factory function (rather than scattered `process.env`
+ * reads) so every consumer gets the same parsed/defaulted values and the
+ * shape is documented in one place. See `.env.example` for the full list
+ * of variables this reads.
  */
+
+/** Fee-estimation profiles exposed by FeeStrategyService. */
+export type FeeProfileName = "moderate" | "aggressive";
+
 export interface AppConfig {
   port: number;
   frontendUrl: string;
@@ -29,7 +38,7 @@ export interface AppConfig {
     poolContractId: string;
     policyContractId: string;
     oracleContractId: string;
-    relayerSecret?: string;
+    relayerSecret: string;
     relayerSecretId?: string;
     relayerSecretRegion?: string;
     validateOnChain?: boolean;
@@ -49,6 +58,32 @@ export interface AppConfig {
       pageLimit: number;
     };
   };
+  /**
+   * Shared Soroban confirmation poller defaults (see
+   * `pollForConfirmation`). Per-call overrides let the HTTP submit path
+   * use a short deadline while settlement/oracle publish use a longer one.
+   */
+  confirmation: {
+    initialIntervalMs: number;
+    backoffMultiplier: number;
+    maxIntervalMs: number;
+    deadlineMs: number;
+    jitterRatio: number;
+    /** Longer deadline for relayer-signed settlement / oracle publishes. */
+    settlementDeadlineMs: number;
+    /** Shorter deadline so HTTP handlers don't block for a full minute. */
+    httpDeadlineMs: number;
+  };
+  oraclePublish: {
+    /**
+     * `every_poll` — publish on every scheduler tick (subject to min interval).
+     * `on_change` — publish only when the scaled fixed-point value changes
+     * (default; bounds fee spend).
+     */
+    mode: "every_poll" | "on_change";
+    /** Floor between publishes for the same coverage type (ms). */
+    minIntervalMs: number;
+  };
   oracles: {
     coingeckoBaseUrl: string;
     horizonUrl: string;
@@ -56,31 +91,30 @@ export interface AppConfig {
     defiLlamaProtocolSlug: string;
     httpTimeoutMs: number;
   };
-  confirmation?: {
-    initialIntervalMs: number;
-    backoffMultiplier: number;
-    maxIntervalMs: number;
-    deadlineMs: number;
-    jitterRatio: number;
-    settlementDeadlineMs: number;
-    httpDeadlineMs: number;
-  };
-  oraclePublish?: {
-    mode: "every_poll" | "on_change";
-    minIntervalMs: number;
-  };
+  /** Soroban inclusion-fee estimation strategy. */
   fees: {
-    statsTtlMs: number;
+    /** Hard ceiling (stroops) above which FeeCeilingExceededError is thrown. */
     ceilingStroops: string;
+    /** TTL for the cached getFeeStats response (ms). */
+    statsTtlMs: number;
+    /** Per-profile percentile + multiplier used to derive an inclusion fee. */
     profiles: Record<FeeProfileName, { percentile: number; multiplier: number }>;
   };
+  /** Background Soroban event indexer settings. */
   eventIndexer: {
     enabled: boolean;
     pollIntervalMs: number;
     lagAlertLedgers: number;
     pageLimit: number;
   };
+  /** Ops-facing auth (bearer token + read-only community keys). */
+  ops: {
+    apiToken: string;
+    communityApiKeys: string[];
+  };
+  /** Admin-only API key (x-api-key header). */
   adminApiKey: string;
+  /** Community-scoped API key records accepted on read-only endpoints. */
   communityApiKeys: Array<{
     key: string;
     scope: "community";
@@ -88,8 +122,15 @@ export interface AppConfig {
     rateLimitPerMinute: number;
     createdAt: string;
   }>;
+  /** Named throttling tiers consumed by ThrottlerModule. */
+  throttle: {
+    upstream: { ttl: number; limit: number };
+    chain: { ttl: number; limit: number };
+    default: { ttl: number; limit: number };
+    catalog: { ttl: number; limit: number };
+  };
+  /** Pending off-chain policies that never get submitted expire after this many ms. */
   policyPendingTtlMs: number;
-  throttle: Record<"upstream" | "chain" | "default" | "catalog", { ttl: number; limit: number }>;
 }
 
 const NETWORK_CONFIG: Record<string, { sorobanRpcUrl: string; horizonUrl: string; networkPassphrase: string }> = {
@@ -179,13 +220,6 @@ export default (): AppConfig => {
         pageLimit: numberFromEnv("EVENT_INDEXER_PAGE_LIMIT", 100),
       },
     },
-    oracles: {
-      coingeckoBaseUrl: env.COINGECKO_BASE_URL ?? "https://api.coingecko.com/api/v3",
-      horizonUrl: selectedNetwork.horizonUrl,
-      defiLlamaBaseUrl: env.DEFILLAMA_BASE_URL ?? "https://api.llama.fi",
-      defiLlamaProtocolSlug: env.DEFILLAMA_PROTOCOL_SLUG ?? "aave",
-      httpTimeoutMs: numberFromEnv("ORACLE_HTTP_TIMEOUT_MS", 5_000),
-    },
     confirmation: {
       initialIntervalMs: numberFromEnv("CONFIRMATION_INITIAL_INTERVAL_MS", 400),
       backoffMultiplier: numberFromEnv("CONFIRMATION_BACKOFF_MULTIPLIER", 1.8),
@@ -198,6 +232,17 @@ export default (): AppConfig => {
     oraclePublish: {
       mode: env.ORACLE_PUBLISH_MODE === "every_poll" ? "every_poll" : "on_change",
       minIntervalMs: numberFromEnv("ORACLE_PUBLISH_MIN_INTERVAL_MS", 300_000),
+    },
+    oracles: {
+      coingeckoBaseUrl: env.COINGECKO_BASE_URL ?? "https://api.coingecko.com/api/v3",
+      horizonUrl: selectedNetwork.horizonUrl,
+      defiLlamaBaseUrl: env.DEFILLAMA_BASE_URL ?? "https://api.llama.fi",
+      // Placeholder "covered protocol" for the SmartContractRisk TVL-drop
+      // check until Refract defines a real list of covered Soroban
+      // protocols. Defaults to a large, consistently-tracked protocol so
+      // the drop-detection logic has real data to run against.
+      defiLlamaProtocolSlug: env.DEFILLAMA_PROTOCOL_SLUG ?? "aave",
+      httpTimeoutMs: numberFromEnv("ORACLE_HTTP_TIMEOUT_MS", 5_000),
     },
     fees: {
       statsTtlMs: numberFromEnv("FEE_STATS_TTL_MS", 15_000),
@@ -219,7 +264,13 @@ export default (): AppConfig => {
       lagAlertLedgers: numberFromEnv("EVENT_INDEXER_LAG_ALERT_LEDGERS", 100),
       pageLimit: numberFromEnv("EVENT_INDEXER_PAGE_LIMIT", 100),
     },
-    policyPendingTtlMs: numberFromEnv("POLICY_PENDING_TTL_MS", 3_600_000),
+    ops: {
+      apiToken: env.OPS_API_TOKEN ?? "",
+      communityApiKeys: (env.COMMUNITY_API_KEYS ?? "")
+        .split(",")
+        .map((k) => k.trim())
+        .filter(Boolean),
+    },
     adminApiKey: env.ADMIN_API_KEY ?? "",
     communityApiKeys: [],
     throttle: {
@@ -228,5 +279,6 @@ export default (): AppConfig => {
       default: { ttl: 60_000, limit: 100 },
       catalog: { ttl: 60_000, limit: 200 },
     },
+    policyPendingTtlMs: numberFromEnv("POLICY_PENDING_TTL_MS", 3_600_000),
   };
 };

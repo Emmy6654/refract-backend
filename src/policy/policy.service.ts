@@ -223,6 +223,11 @@ export class PolicyService {
    * catches the case where that per-type cap is still above whatever the
    * pool is actually configured to allow right now — e.g. after an admin
    * calls set_pool_config() — which the catalog alone can't see.
+   *
+   * pool_config() is a stateless view with no caller-specific args, so
+   * when no holder is supplied the source account only needs to be
+   * well-formed for the tx envelope — it never touches the network,
+   * unlike getAccount().
    */
   async onChainCoverageBounds(holder?: string): Promise<{ minCoverage: bigint; maxCoverage: bigint } | null> {
     if (!this.poolContractId) return null;

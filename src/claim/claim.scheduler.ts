@@ -42,10 +42,6 @@ export class ClaimScheduler implements OnModuleInit, OnApplicationShutdown {
   async onApplicationShutdown(signal?: string): Promise<void> {
     this.shuttingDown = true;
 
-    if (!this.inFlight) {
-      return;
-    }
-
     this.logger.log(
       `ClaimScheduler shutdown (${signal ?? 'unknown'}): waiting up to ${SHUTDOWN_DRAIN_TIMEOUT_MS}ms for in-flight settlement run to finish.`,
     );
@@ -134,6 +130,9 @@ export class ClaimScheduler implements OnModuleInit, OnApplicationShutdown {
 
     return new Promise<boolean>((resolve) => {
       const timer = setTimeout(() => resolve(false), SHUTDOWN_DRAIN_TIMEOUT_MS);
+      if (typeof timer.unref === 'function') {
+        timer.unref();
+      }
 
       run
         .catch(() => undefined)

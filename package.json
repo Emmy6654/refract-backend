@@ -15,9 +15,9 @@
     "start": "nest start",
     "start:dev": "nest start --watch",
     "start:prod": "node dist/main",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint \"src/**/*.ts\"",
-    "test": "jest",
+    "test": "npm run test:unit && npm run test:contracts",
     "test:cov": "jest --coverage",
     "test:integration": "jest --config test/integration/jest.integration.config.ts --runInBand",
     "test:unit": "npm run test --workspaces --if-present",
@@ -34,21 +34,6 @@
   },
   "engines": {
     "node": ">=18"
-  },
-  "jest": {
-    "preset": "ts-jest",
-    "testEnvironment": "node",
-    "rootDir": "src",
-    "testRegex": ".*\\.spec\\.ts$",
-    "moduleFileExtensions": ["js", "json", "ts"],
-    "transform": {
-      "^.+\\.(t|j)s$": "ts-jest"
-    },
-    "transformIgnorePatterns": [
-      "/node_modules/(?!(?:@stellar/stellar-sdk|@noble/.*|@scure/.*|uint8array-extras|hexoid|bignumber.js))"
-    ],
-    "collectCoverageFrom": ["**/*.(t|j)s"],
-    "coverageDirectory": "../coverage"
   },
   "dependencies": {
     "@aws-sdk/client-secrets-manager": "^3.1142.0",
@@ -104,5 +89,25 @@
     "ts-jest": "^29.4.11",
     "ts-node": "^10.9.2",
     "typescript": "^5.3.2"
+  },
+  "jest": {
+    "preset": "ts-jest",
+    "testEnvironment": "node",
+    "rootDir": "src",
+    "testRegex": ".*\\.spec\\.ts$",
+    "testMatch": [
+      "**/src/**/*.spec.ts"
+    ],
+    "moduleFileExtensions": ["js", "json", "ts"],
+    "transform": {
+      "^.+\\.(t|j)s$": "ts-jest",
+      "^.+\\.ts$": "ts-jest",
+      "^.+\\.js$": "babel-jest"
+    },
+    "transformIgnorePatterns": [
+      "/node_modules/(?!(@stellar|@noble|@scure|stellar-base|bignumber.js|crc|tweetnacl|base32.js|uint8array-extras|@adraffy|@noble/curves)/)"
+    ],
+    "collectCoverageFrom": ["**/*.(t|j)s"],
+    "coverageDirectory": "../coverage"
   }
 }
