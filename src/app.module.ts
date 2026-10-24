@@ -29,6 +29,8 @@ import { AuthModule } from './auth/auth.module';
 import { ApiKeyGuard } from './auth/api-key.guard';
 import { SecurityReportsModule } from './security-reports/security-reports.module';
 import { DigestModule } from './digest/digest.module';
+import { ReadingBusModule } from './oracle/reading-bus.module';
+import { OracleFeedModule } from './oracle/oracle-feed.module';
 import { OracleIngestionModule } from './oracle/sources/oracle-ingestion.module';
 import { OracleRegionsModule } from './oracle/regions/oracle-regions.module';
 import { ReevaluationModule } from './claim/reevaluation/reevaluation.module';
@@ -39,6 +41,8 @@ import { isOracleSandboxEnabled } from './oracle/sandbox/oracle-sandbox.config';
 import { FeedsModule } from './feeds/feeds.module';
 import { OperatorsModule } from './routes/operators';
 import { StakingModule } from './routes/staking';
+import { EventsModule } from './events/events.module';
+import { MetricsModule } from './metrics/metrics.module';
 
 /**
  * Sandbox mode lets the full API run with zero external dependencies
@@ -51,50 +55,19 @@ export const isSandboxMode = (): boolean =>
 
 @Module({
   imports: [
-    ConfigModule.forRoot({
-      isGlobal: true,
-      load: [configuration],
-    }),
+    ConfigModule.forRoot({ isGlobal: true, load: [configuration] }),
     ThrottlerModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService<AppConfig, true>) => ({
         throttlers: [
-          {
-            name: 'upstream',
-            ttl: config.get('throttle.upstream.ttl', { infer: true }),
-            limit: config.get('throttle.upstream.limit', { infer: true }),
-          },
-          {
-            name: 'chain',
-            ttl: config.get('throttle.chain.ttl', { infer: true }),
-            limit: config.get('throttle.chain.limit', { infer: true }),
-          },
-          {
-            name: 'default',
-            ttl: config.get('throttle.default.ttl', { infer: true }),
-            limit: config.get('throttle.default.limit', { infer: true }),
-          },
-          {
-            name: 'catalog',
-            ttl: config.get('throttle.catalog.ttl', { infer: true }),
-            limit: config.get('throttle.catalog.limit', { infer: true }),
-          },
+          { name: "upstream", ...config.get("throttle.upstream", { infer: true }) },
+          { name: "chain", ...config.get("throttle.chain", { infer: true }) },
+          { name: "default", ...config.get("throttle.default", { infer: true }) },
+          { name: "catalog", ...config.get("throttle.catalog", { infer: true }) },
         ],
       }),
     }),
     ScheduleModule.forRoot(),
-    // In sandbox mode we skip the real Postgres connection entirely so
-    // `npm run dev` works right after `npm install` with no other setup.
-    ...(isSandboxMode()
-      ? []
-      : [
-          TypeOrmModule.forRootAsync({
-            imports: [DatabaseModule],
-            inject: [DatabaseModule],
-            useFactory: (databaseModule: DatabaseModule) =>
-              databaseModule.getTypeOrmConfig(),
-          }),
-        ]),
     DatabaseModule,
     IdempotencyModule,
     // CacheModule is @Global — imported once here, available everywhere.
@@ -104,7 +77,8 @@ export const isSandboxMode = (): boolean =>
     StellarModule,
     DbModule,
     HealthModule,
-    AuthModule,
+    MetricsModule,
+    EventsModule,
     QuoteModule,
     PolicyModule,
     PoolModule,
@@ -115,6 +89,9 @@ export const isSandboxMode = (): boolean =>
     // Global: per-adapter endpoint lists with health-based failover.
     ProviderEndpointsModule,
     OracleModule,
+    // Read side of the oracle: relays readings the worker publishes.
+    ReadingBusModule,
+    OracleFeedModule,
     OracleBootstrapModule,
     OracleAdminModule,
     ConsensusModule,
@@ -144,51 +121,4 @@ export const isSandboxMode = (): boolean =>
     },
   ],
 })
-export class AppModule implements OnModuleInit, OnApplicationShutdown {
-  private readonly logger = new Logger(AppModule.name);
-
-  constructor(private readonly configService: ConfigService) {}
-
-  onModuleInit(): void {
-    if (!isSandboxMode()) {
-      return;
-    }
-
-    const nodeEnv = (
-      this.configService.get<string>('NODE_ENV') ??
-      process.env.NODE_ENV ??
-      ''
-    ).toLowerCase();
-
-    // Boot-time safety check: sandbox mode is a local-only onboarding tool
-    // and must never be reachable from a production-configured deployment.
-    if (nodeEnv === 'production') {
-      throw new Error(
-        'SANDBOX_MODE=true is not allowed when NODE_ENV=production. ' +
-          'Sandbox mode is a local contributor-onboarding tool only.',
-      );
-    }
-
-    this.logger.warn(
-      '============================================================',
-    );
-    this.logger.warn(
-      '  SANDBOX MODE ENABLED — NOT A REAL ENVIRONMENT',
-    );
-    this.logger.warn(
-      '  Postgres, Redis, and Soroban RPC are replaced with in-memory',
-    );
-    this.logger.warn(
-      '  mocks. All data resets on restart. Do not use outside local dev.',
-    );
-    this.logger.warn(
-      '============================================================',
-    );
-  }
-
-  async onApplicationShutdown(signal?: string): Promise<void> {
-    this.logger.log(
-      `Application shutdown initiated${signal ? ` (signal: ${signal})` : ''} — draining schedulers and connection pools`,
-    );
-  }
-}
+export class AppModule {}

@@ -62,13 +62,15 @@ export class OracleGateway
     this.clients.set(client, state);
     this.startTimers();
 
-    client.on('error', (err) => {
-      this.logger.warn(`Oracle WebSocket client error: ${err.message}`);
-    });
-    client.on('pong', () => {
-      state.alive = true;
-    });
-    client.on('message', (data) => this.onMessage(client, state, data.toString()));
+    if (typeof client.on === 'function') {
+      client.on('error', (err) => {
+        this.logger.warn(`Oracle WebSocket client error: ${err.message}`);
+      });
+      client.on('pong', () => {
+        state.alive = true;
+      });
+      client.on('message', (data) => this.onMessage(client, state, data.toString()));
+    }
 
     // Snapshot first, so clients need no racing REST bootstrap.
     this.safeSend(client, {
@@ -80,14 +82,42 @@ export class OracleGateway
         .map((e) => this.view(state, e)),
     });
 
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(
-        JSON.stringify({
-          type: 'oracle_status',
-          message: 'Refract oracle feed connected',
-        }),
-      );
+    this.safeSend(client, { type: 'connected', message: 'Refract oracle feed' });
+  }
+
+  /**
+   * Push a reading to every open client. In a split deployment the readings
+   * come from the worker via the ReadingBus (see OracleFeedRelay); this
+   * process never polls upstreams itself.
+   */
+  broadcastAlert(reading: OracleReading): void {
+    if (!this.server?.clients) {
+      return;
     }
+    const message = JSON.stringify({
+      type: 'oracle_alert',
+      data: reading,
+      timestamp: new Date().toISOString(),
+    });
+    let sent = 0;
+    for (const client of this.server.clients) {
+      if (client.readyState !== WebSocket.OPEN) {
+        continue;
+      }
+      // send() can throw for a socket that is mid-close; one bad client must
+      // not stop the broadcast to everyone else.
+      try {
+        client.send(message, (error) => {
+          if (error) this.logger.warn(`Oracle WebSocket send failed: ${error.message}`);
+        });
+        sent++;
+      } catch (error) {
+        this.logger.warn(
+          `Failed to send oracle alert: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+    this.logger.debug(`Broadcast ${reading.coverageType} alert to ${sent} client(s)`);
   }
 
   handleDisconnect(client: WebSocket): void {

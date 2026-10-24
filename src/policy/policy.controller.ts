@@ -1,4 +1,4 @@
-import { Controller, Get, NotFoundException, Param, Post, Body } from "@nestjs/common";
+import { Controller, Get, NotFoundException, Param, Post, Body, Query } from "@nestjs/common";
 import { BuyPolicyDto } from "./dto/buy-policy.dto";
 import { PolicyService } from "./policy.service";
 import { SecurityAudit } from "../common/security-audit.interceptor";
@@ -21,8 +21,8 @@ export class PolicyController {
    * swallowed as a policy id.
    */
   @Get("coverage-bounds")
-  async getCoverageBounds() {
-    const bounds = await this.policyService.onChainCoverageBounds();
+  async getCoverageBounds(@Query("holder") holder?: string) {
+    const bounds = await this.policyService.onChainCoverageBounds(holder);
     return {
       minCoverage: bounds ? bounds.minCoverage.toString() : null,
       maxCoverage: bounds ? bounds.maxCoverage.toString() : null,

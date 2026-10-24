@@ -1,8 +1,12 @@
-import { Injectable, Logger, OnApplicationShutdown, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnApplicationShutdown, OnModuleInit, Optional } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { ClaimService } from './claim.service';
+import { ClaimService, ScanOutcome } from './claim.service';
 import { ProtocolParametersService } from '../parameters/protocol-parameters.service';
+import { runsPipeline } from '../runtime/process-role';
+import { PipelineHeartbeat } from '../runtime/pipeline-heartbeat';
 import { LeaderElector } from '../leader/leader-elector.service';
+
+export const CLAIM_PIPELINE_STAGE = 'claim-settlement';
 
 /**
  * Upper bound (ms) we are willing to wait for an in-flight settlement run to
@@ -12,20 +16,9 @@ import { LeaderElector } from '../leader/leader-elector.service';
  */
 const SHUTDOWN_DRAIN_TIMEOUT_MS = 30_000;
 
-/**
- * Default interval (in seconds) used when the registry has no override for the
- * claim scheduler interval. Kept as a fallback only; the effective value is
- * read from the protocol-parameters registry at runtime so governance can
- * adjust it without a code deploy.
- */
-export const DEFAULT_CLAIM_SCHEDULER_INTERVAL_SECONDS = 60;
-
-/** Registry key for the claim scheduler interval. */
-export const CLAIM_SCHEDULER_INTERVAL_KEY = 'scheduler.claim.interval_seconds';
-
 @Injectable()
 export class ClaimScheduler implements OnModuleInit, OnApplicationShutdown {
-  private readonly logger = new Logger(ClaimScheduler.name);
+  readonly logger = new Logger(ClaimScheduler.name);
 
   /**
    * Tracks the currently executing settlement run so shutdown can wait for it
@@ -42,12 +35,40 @@ export class ClaimScheduler implements OnModuleInit, OnApplicationShutdown {
   constructor(
     private readonly claimService: ClaimService,
     private readonly protocolParameters: ProtocolParametersService,
+    @Optional() private readonly heartbeat?: PipelineHeartbeat,
     private readonly leaderElector: LeaderElector,
   ) {}
 
   async onModuleInit(): Promise<void> {
+    if (!runsPipeline()) {
+      this.logger.log('Claim settlement disabled in this process (PROCESS_ROLE=api)');
+      return;
+    }
+    this.heartbeat?.expect(CLAIM_PIPELINE_STAGE);
     const interval = await this.getIntervalSeconds();
     this.logger.log(`Claim scheduler initialized with interval ${interval}s`);
+  }
+
+  async onApplicationShutdown(signal?: string): Promise<void> {
+    this.shuttingDown = true;
+
+    if (!this.inFlight) {
+      return;
+    }
+
+    this.logger.log(
+      `ClaimScheduler shutdown (${signal ?? 'unknown'}): waiting up to ${SHUTDOWN_DRAIN_TIMEOUT_MS}ms for in-flight settlement run to finish.`,
+    );
+
+    const drained = await this.waitForInFlight();
+
+    if (drained) {
+      this.logger.log('In-flight settlement run completed cleanly.');
+    } else {
+      this.logger.warn(
+        `In-flight settlement run did not finish within ${SHUTDOWN_DRAIN_TIMEOUT_MS}ms; proceeding with shutdown. The run may be interrupted.`,
+      );
+    }
   }
 
   /**
@@ -64,6 +85,11 @@ export class ClaimScheduler implements OnModuleInit, OnApplicationShutdown {
 
   @Cron(CronExpression.EVERY_MINUTE)
   async handleClaimSettlement(): Promise<void> {
+    // Settlement triggers payouts, so it only runs in the worker tier.
+    if (!runsPipeline()) {
+      return;
+    }
+
     if (this.shuttingDown) {
       this.logger.log(
         'Skipping claim settlement run: scheduler is shutting down.',
@@ -83,12 +109,10 @@ export class ClaimScheduler implements OnModuleInit, OnApplicationShutdown {
       return;
     }
 
-    const interval = await this.getIntervalSeconds();
-    this.logger.debug(`Running claim processing (interval=${interval}s)`);
+    this.logger.debug("Running claim processing");
 
     const run = this.runSettlement();
     this.inFlight = run;
-
     try {
       await run;
     } finally {
@@ -99,43 +123,22 @@ export class ClaimScheduler implements OnModuleInit, OnApplicationShutdown {
   }
 
   private async runSettlement(): Promise<void> {
-    try {
-      await this.claimService.settleClaims();
-    } catch (error) {
-      this.logger.error(
-        'Claim settlement run failed.',
-        error instanceof Error ? error.stack : String(error),
-      );
-    }
+    await this.scanAndSettle();
   }
 
-  /**
-   * Called by Nest during graceful shutdown. Stops new runs from starting and
-   * waits (bounded) for the current settlement run to finish so we never
-   * interrupt a mid-flight settlement.
-   */
-  async onApplicationShutdown(signal?: string): Promise<void> {
-    this.shuttingDown = true;
-
-    if (!this.inFlight) {
+  async scanAndSettle(): Promise<void> {
+    try {
+      const outcome: ScanOutcome = await this.claimService.processTriggeredWithStats();
+      const { counts } = outcome;
       this.logger.log(
-        `ClaimScheduler shutdown (${signal ?? 'unknown'}): no in-flight settlement run.`,
+        `claim scan: scanned=${counts.scanned} triggered=${counts.triggered} settled=${counts.settled} deferred=${counts.deferred} transient=${counts.failedTransient} permanent=${counts.failedPermanent} indeterminate=${counts.failedIndeterminate} deadLettered=${counts.deadLettered}`
       );
-      return;
-    }
-
-    this.logger.log(
-      `ClaimScheduler shutdown (${signal ?? 'unknown'}): waiting up to ${SHUTDOWN_DRAIN_TIMEOUT_MS}ms for in-flight settlement run to finish.`,
-    );
-
-    const drained = await this.waitForInFlight();
-
-    if (drained) {
-      this.logger.log('In-flight settlement run completed cleanly.');
-    } else {
-      this.logger.warn(
-        `In-flight settlement run did not finish within ${SHUTDOWN_DRAIN_TIMEOUT_MS}ms; proceeding with shutdown. The run may be interrupted.`,
-      );
+      if (outcome.settled.length > 0) {
+        this.logger.log(`Settled ${outcome.settled.length} claims this cycle`);
+      }
+      this.heartbeat?.beat(CLAIM_PIPELINE_STAGE);
+    } catch (error) {
+      this.logger.error("Claim scan failed", error instanceof Error ? error.stack : String(error));
     }
   }
 
@@ -147,6 +150,9 @@ export class ClaimScheduler implements OnModuleInit, OnApplicationShutdown {
 
     return new Promise<boolean>((resolve) => {
       const timer = setTimeout(() => resolve(false), SHUTDOWN_DRAIN_TIMEOUT_MS);
+      if (typeof timer.unref === 'function') {
+        timer.unref();
+      }
 
       run
         .catch(() => undefined)
@@ -155,7 +161,5 @@ export class ClaimScheduler implements OnModuleInit, OnApplicationShutdown {
           resolve(true);
         });
     });
-  }
-}
   }
 }

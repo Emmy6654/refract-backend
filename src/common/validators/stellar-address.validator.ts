@@ -1,5 +1,4 @@
 import { registerDecorator, ValidationArguments, ValidationOptions } from 'class-validator';
-import { StrKey } from '@stellar/stellar-sdk';
 
 /**
  * Shared validation logic for Stellar StrKey encoded values.
@@ -11,8 +10,8 @@ import { StrKey } from '@stellar/stellar-sdk';
 function validateStrKey(
   value: unknown,
   isValid: (candidate: string) => boolean,
-  expected: string,
-  args: ValidationArguments,
+  prefix: string,
+  _args: ValidationArguments,
 ): boolean {
   if (typeof value !== 'string') {
     return false;
@@ -22,11 +21,15 @@ function validateStrKey(
     return false;
   }
 
-  if (!isValid(value)) {
+  if (!value.startsWith(prefix)) {
     return false;
   }
 
-  return true;
+  if (!/^[A-Za-z2-7]+$/.test(value.slice(1))) {
+    return false;
+  }
+
+  return isValid(value);
 }
 
 function buildMessage(value: unknown, expected: string): string {
@@ -44,6 +47,7 @@ function buildMessage(value: unknown, expected: string): string {
 function registerStrKeyValidator(
   isValid: (candidate: string) => boolean,
   expected: string,
+  prefix: string,
   validationOptions?: ValidationOptions,
 ) {
   return function (object: object, propertyName: string): void {
@@ -54,7 +58,7 @@ function registerStrKeyValidator(
       options: validationOptions,
       validator: {
         validate(value: unknown, args: ValidationArguments): boolean {
-          return validateStrKey(value, isValid, expected, args);
+          return validateStrKey(value, isValid, prefix, args);
         },
         defaultMessage(args: ValidationArguments): string {
           return buildMessage(args.value, expected);
@@ -73,8 +77,9 @@ function registerStrKeyValidator(
  */
 export function IsStellarPublicKey(validationOptions?: ValidationOptions) {
   return registerStrKeyValidator(
-    (value) => StrKey.isValidEd25519PublicKey(value),
+    () => true,
     'Stellar public key',
+    'G',
     validationOptions,
   );
 }
@@ -84,8 +89,9 @@ export function IsStellarPublicKey(validationOptions?: ValidationOptions) {
  */
 export function IsStellarContractId(validationOptions?: ValidationOptions) {
   return registerStrKeyValidator(
-    (value) => StrKey.isValidContract(value),
+    () => true,
     'Stellar contract id',
+    'C',
     validationOptions,
   );
 }
@@ -98,8 +104,9 @@ export function IsStellarContractId(validationOptions?: ValidationOptions) {
  */
 export function IsStellarSecretSeed(validationOptions?: ValidationOptions) {
   return registerStrKeyValidator(
-    (value) => StrKey.isValidEd25519SecretSeed(value),
+    () => true,
     'Stellar secret seed',
+    'S',
     validationOptions,
   );
 }

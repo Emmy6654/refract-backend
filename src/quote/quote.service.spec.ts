@@ -2,6 +2,7 @@ import { BadRequestException } from "@nestjs/common";
 import { QuoteService } from "./quote.service";
 import { CoverageTypeName } from "./coverage-type";
 import { CreateQuoteDto } from "./dto/create-quote.dto";
+import { OracleTrustService } from "../oracle/oracle-trust.service";
 
 function buildDto(overrides: Partial<CreateQuoteDto> = {}): CreateQuoteDto {
   return {
@@ -22,6 +23,21 @@ describe("QuoteService", () => {
   describe("listCoverageTypes", () => {
     it("returns all five coverage types", () => {
       expect(service.listCoverageTypes()).toHaveLength(5);
+    });
+
+    it("marks a coverage unavailable until its required feed is healthy and confirmed", () => {
+      const trust = new OracleTrustService();
+      const guardedService = new QuoteService(trust);
+
+      expect(guardedService.listCoverageTypes()[0].available).toBe(false);
+      expect(() =>
+        guardedService.createQuote(buildDto()),
+      ).toThrow(BadRequestException);
+
+      trust.recordObservation("coingecko-usdc", true);
+      trust.recordPublication("coingecko-usdc", true);
+      expect(guardedService.listCoverageTypes()[0].available).toBe(true);
+      expect(() => guardedService.createQuote(buildDto())).not.toThrow();
     });
   });
 

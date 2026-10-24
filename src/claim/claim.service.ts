@@ -12,6 +12,7 @@ import { OracleService } from "../oracle/oracle.service";
 import { PolicyService, StoredPolicy } from "../policy/policy.service";
 import { ClaimSettlementService } from "./claim-settlement.service";
 import { ClaimResult } from "./claim-result";
+import { ReconciliationService } from "./reconciliation.service";
 import type { FeedTrustState } from "../oracle/regions/region-quorum";
 import { AdjudicationOutcome, AdjudicationRecord, feedIdForPolicy } from "./reevaluation/adjudication";
 import {
@@ -22,7 +23,30 @@ import {
 } from "./trigger/trigger-stability";
 import { authorizeSettlement, SettlementAuthorization } from "./settlement-authorization";
 
-const STALENESS_LIMIT_SECONDS = 1800; // 30 minutes — matches the old ClaimProcessor
+const STALENESS_LIMIT_SECONDS = 1800;
+
+export interface ScanOutcome {
+  settled: ClaimResult[];
+  counts: {
+    scanned: number;
+    triggered: number;
+    settled: number;
+    deferred: number;
+    failedTransient: number;
+    failedPermanent: number;
+    failedIndeterminate: number;
+    deadLettered: number;
+  };
+}
+
+export interface DeadLetterEntry {
+  policyId: string;
+  holder: string;
+  failureCount: number;
+  lastError: string;
+  reason: string;
+  coverageType: number;
+}
 
 /**
  * ClaimService scans active policies and settles payouts.
@@ -55,6 +79,12 @@ export class ClaimService {
   private payoutTotal = BigInt(0);
   // In-memory settlement history; replaced once the Postgres-backed repository lands.
   private readonly history: ClaimResult[] = [];
+  private readonly deadLetterClaims: DeadLetterEntry[] = [];
+  private readonly failureCounts = new Map<string, number>();
+  private readonly deadLetterPolicyIds = new Set<string>();
+
+  private readonly oracleEventRepository?: OracleEventRepository;
+  private readonly reconciliationService?: ReconciliationService;
   // Debounces each policy's threshold check (hysteresis, minimum dwell,
   // flap damping) so a value hovering around the threshold can't toggle
   // the coverage condition on every scan. Keyed by policy id.
@@ -73,14 +103,25 @@ export class ClaimService {
     private readonly policyService: PolicyService,
     private readonly consensus: ConsensusService,
     private readonly claimSettlementService: ClaimSettlementService,
-    private readonly oracleEventRepository: OracleEventRepository,
+    private readonly oracleService: OracleService,
     private readonly oracleControl: OracleControlService,
     private readonly anomalyDetector: AnomalyDetector,
     private readonly circuitBreaker: CircuitBreaker,
+    oracleEventRepositoryOrReconciliation?: OracleEventRepository | ReconciliationService,
+    reconciliationService?: ReconciliationService,
     // Optional so existing wiring/tests without the consensus layer keep
     // today's behaviour: no gate, settle directly.
     @Optional() private readonly claimHoldService?: ClaimHoldService
   ) {
+    if (oracleEventRepositoryOrReconciliation && "record" in oracleEventRepositoryOrReconciliation) {
+      this.oracleEventRepository = oracleEventRepositoryOrReconciliation as OracleEventRepository;
+    }
+    if (oracleEventRepositoryOrReconciliation && "recordFailedSettlement" in oracleEventRepositoryOrReconciliation) {
+      this.reconciliationService = oracleEventRepositoryOrReconciliation as ReconciliationService;
+    }
+    if (reconciliationService) {
+      this.reconciliationService = reconciliationService;
+    }
     this.triggerEvaluator.onTransition((e) => {
       const line =
         `Trigger ${e.kind} policy=${e.key} ${e.from} -> ${e.to} value=${e.evidence.value} ` +
@@ -98,11 +139,22 @@ export class ClaimService {
   }
 
   async processTriggered(): Promise<ClaimResult[]> {
-    const activePolicies = this.policyService.listActive();
-    const settled: ClaimResult[] = [];
-    if (activePolicies.length === 0) return settled;
+    return (await this.processTriggeredWithStats()).settled;
+  }
 
-    this.logger.log(`Scanning ${activePolicies.length} active polic${activePolicies.length === 1 ? "y" : "ies"}`);
+  async processTriggeredWithStats(): Promise<ScanOutcome> {
+    const activePolicies = this.policyService.listActive().filter((policy) => !this.deadLetterPolicyIds.has(policy.id));
+    const settled: ClaimResult[] = [];
+    const counts = {
+      scanned: activePolicies.length,
+      triggered: 0,
+      settled: 0,
+      deferred: 0,
+      failedTransient: 0,
+      failedPermanent: 0,
+      failedIndeterminate: 0,
+      deadLettered: 0,
+    };
 
     for (const policy of activePolicies) {
       try {
@@ -133,6 +185,7 @@ export class ClaimService {
         const trust = this.trustGate?.(feedId) ?? null;
         const untrusted = trust !== null && trust !== "trusted";
         if (result.triggered) {
+          counts.triggered += 1;
           // Operator pause: the reading was already polled and logged above, but
           // no payout is attempted. Checked per policy so a pause issued mid-scan
           // stops the remaining payouts in this run.
@@ -146,26 +199,41 @@ export class ClaimService {
             this.logger.warn(`Holding payout for policy ${policy.id}: feed ${feedId} is ${trust}`);
             this.emitAdjudication(policy, oracle, feedId, trust, "held", fetchedAt, "0");
           } else {
-          // Only counted/deactivated once the on-chain payout actually
-          // confirms — a failed or unconfirmed settlement leaves the
-          // policy active so the next scheduled scan retries it.
-          const settledResult = await this.processPayout(policy, result, oracle.coverageType);
-          if (settledResult) settled.push(settledResult);
-          if (settledResult && untrusted) {
-            this.emitAdjudication(policy, oracle, feedId, trust, "settled", fetchedAt, settledResult.payout, settledResult.settlementTxHash);
+            // Only counted/deactivated once the on-chain payout actually
+            // confirms — a failed or unconfirmed settlement leaves the
+            // policy active so the next scheduled scan retries it.
+            const settledResult = await this.processPayout(policy, result, outcome.authorization);
+            if (settledResult) {
+              settled.push(settledResult);
+              counts.settled += 1;
+              if (untrusted) {
+                this.emitAdjudication(
+                  policy,
+                  oracle,
+                  feedId,
+                  trust,
+                  "settled",
+                  fetchedAt,
+                  settledResult.payout,
+                  settledResult.settlementTxHash
+                );
+              }
+            } else {
+              counts.deferred += 1;
+              counts.failedTransient += 1;
+            }
           }
         } else if (untrusted) {
           this.emitAdjudication(policy, oracle, feedId, trust, "skipped", fetchedAt, "0");
         }
-        }
-        const result = await this.processPayout(policy, outcome.authorization);
-        if (result) settled.push(result);
       } catch (err) {
+        counts.failedIndeterminate += 1;
         this.logger.error(`Error scanning policy ${policy.id}`, err instanceof Error ? err.stack : String(err));
       }
     }
 
-    return settled;
+    counts.deadLettered = this.deadLetterClaims.length;
+    return { settled, counts };
   }
 
   /** Supplies feed trust (from the regional quorum). Without one, every feed is treated as trusted. */
@@ -263,10 +331,7 @@ export class ClaimService {
         throw new Error(`Unknown coverageType ${policy.coverageType}`);
     }
 
-    // Persist every claim-evaluation reading — fire-and-forget so a DB
-    // hiccup never disrupts the evaluation path.
-    void this.oracleEventRepository.record(reading);
-
+    void this.oracleEventRepository?.record(reading);
     return reading;
   }
 
@@ -316,7 +381,7 @@ export class ClaimService {
     if (!opened) return;
 
     this.logger.error(`Circuit breaker OPENED for ${reading.coverageType}: ${reason}`);
-    await this.oracleEventRepository.record({
+    await this.oracleEventRepository?.record({
       ...reading,
       severity: "triggered",
       message: `Circuit breaker opened: ${reason} [AnomalyDetector]`,
@@ -327,12 +392,12 @@ export class ClaimService {
   private async processPayout(
     policy: StoredPolicy,
     result: ClaimResult,
-    coverageType: string
+    authorization?: SettlementAuthorization
   ): Promise<ClaimResult | undefined> {
     // Re-checked here, not only in the scan loop, so a breaker opened after
     // the value was computed still blocks settlement.
-    if (!(await this.circuitBreaker.isSettlementAllowed(coverageType))) {
-      this.logger.error(`Settlement blocked for policy ${policy.id}: circuit breaker not closed for ${coverageType}`);
+    if (!(await this.circuitBreaker.isSettlementAllowed(String(policy.coverageType)))) {
+      this.logger.error(`Settlement blocked for policy ${policy.id}: circuit breaker not closed for ${policy.coverageType}`);
       return undefined;
     }
 
@@ -361,7 +426,22 @@ export class ClaimService {
 
     const settlement = await this.claimSettlementService.settleClaim(policy.id, policy.holder, BigInt(result.payout));
     if (!settlement.settled) {
-      this.logger.error(`Settlement did not confirm for policy ${policy.id}, will retry next scan: ${settlement.error}`);
+      const count = (this.failureCounts.get(policy.id) ?? 0) + 1;
+      this.failureCounts.set(policy.id, count);
+      this.reconciliationService?.recordFailedSettlement(policy.id);
+
+      if (count >= 3) {
+        this.deadLetterClaims.push({
+          policyId: policy.id,
+          holder: policy.holder,
+          failureCount: count,
+          lastError: settlement.error ?? "settlement failed",
+          reason: result.reason,
+          coverageType: policy.coverageType,
+        });
+        this.deadLetterPolicyIds.add(policy.id);
+        this.failureCounts.delete(policy.id);
+      }
       return undefined;
     }
 
@@ -370,22 +450,19 @@ export class ClaimService {
     this.policyService.deactivate(policy.id);
     this.triggerEvaluator.forget(policy.id);
     this.policyCoverageTypes.delete(policy.id);
-    this.processedCount++;
-    this.payoutTotal += auth.payout;
-    const result: ClaimResult = {
-      policyId: policy.id,
-      holder: policy.holder,
-      coverageType: policy.coverageType,
-      triggered: true,
-      payout: auth.payout.toString(),
-      reason,
-      processedAt: Date.now(),
-      triggerDetectedAt: auth.decision.decidedAt,
+    this.processedCount += 1;
+    this.payoutTotal += BigInt(result.payout);
+    const settledResult: ClaimResult = {
+      ...result,
       settlementTxHash: settlement.txHash,
-      decisionId: auth.decision.id,
+      ...(authorization ? { decisionId: authorization.decision.id } : {}),
     };
-    this.history.push(result);
-    return result;
+    this.history.push(settledResult);
+    return settledResult;
+  }
+
+  getDeadLetterClaims(): DeadLetterEntry[] {
+    return [...this.deadLetterClaims];
   }
 
   getStats() {
@@ -394,15 +471,15 @@ export class ClaimService {
       processedClaims: this.processedCount,
       totalPayout: this.payoutTotal.toString(),
       settlementConfigured: this.claimSettlementService.isConfigured(),
+      deadLetterClaims: this.deadLetterClaims.length,
+      settlementRetries: [...this.failureCounts.values()].reduce((sum, value) => sum + value, 0),
     };
   }
 
-  /** Settled claim history for a holder, most recent first. */
   getHistoryForHolder(address: string): ClaimResult[] {
     return this.history.filter((claim) => claim.holder === address).sort((a, b) => b.processedAt - a.processedAt);
   }
 
-  /** Most recent settled claims across all holders, for public "recent activity" displays. */
   getRecentSettlements(limit = 10): ClaimResult[] {
     return [...this.history].sort((a, b) => b.processedAt - a.processedAt).slice(0, limit);
   }

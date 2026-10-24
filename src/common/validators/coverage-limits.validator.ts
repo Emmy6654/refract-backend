@@ -6,7 +6,7 @@ import {
   ValidatorConstraintInterface,
 } from "class-validator";
 import { CoverageTypeName } from "../../quote/coverage-type";
-import { getCoverageType } from "../coverage-catalog";
+import { COVERAGE_CATALOG, CoverageType } from "../coverage-catalog";
 
 /**
  * Per-coverage-type duration and amount limits.
@@ -24,6 +24,18 @@ import { getCoverageType } from "../coverage-catalog";
  */
 const BASE_UNIT_DECIMALS = 7;
 const BASE_UNIT_FACTOR = 10 ** BASE_UNIT_DECIMALS;
+
+function getCoverageLimits(coverageType: CoverageTypeName) {
+  const product = COVERAGE_CATALOG[coverageType as CoverageType];
+  return product
+    ? {
+        minDurationDays: 1,
+        maxDurationDays: product.maxDuration,
+        minCoverageAmount: 100,
+        maxCoverageAmount: product.maxCoverage,
+      }
+    : undefined;
+}
 
 function toWholeUsdc(value: unknown): number | undefined {
   if (typeof value === "number") {
@@ -56,7 +68,7 @@ export class CoverageLimitsConstraint implements ValidatorConstraintInterface {
       return true;
     }
 
-    const limits = getCoverageType(coverageType);
+    const limits = getCoverageLimits(coverageType);
     if (!limits) {
       return true;
     }
@@ -81,7 +93,7 @@ export class CoverageLimitsConstraint implements ValidatorConstraintInterface {
   defaultMessage(args: ValidationArguments): string {
     const object = args.object as Record<string, unknown>;
     const coverageType = object.coverageType as CoverageTypeName | undefined;
-    const limits = coverageType ? getCoverageType(coverageType) : undefined;
+    const limits = coverageType ? getCoverageLimits(coverageType) : undefined;
 
     if (!limits) {
       return "coverageAmount or durationDays is outside the allowed range for this coverage type";

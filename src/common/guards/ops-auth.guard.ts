@@ -36,7 +36,7 @@ export class OpsAuthGuard implements CanActivate {
   constructor(private readonly configService: ConfigService<AppConfig, true>) {}
 
   canActivate(context: ExecutionContext): boolean {
-    const token = this.configService.get("ops", { infer: true }).apiToken;
+    const token = this.configService.get("adminApiKey", { infer: true });
     if (!token) {
       throw new UnauthorizedException({ error: "Ops API token not configured (OPS_API_TOKEN)" });
     }
@@ -72,7 +72,9 @@ export class OpsAuthGuard implements CanActivate {
    * community key record, so elevation is impossible by construction.
    */
   private resolveCommunityScope(presented: string): ApiKeyScope | null {
-    const communityKeys = this.configService.get("ops", { infer: true }).communityApiKeys ?? [];
+    const communityKeys = this.configService
+      .get("communityApiKeys", { infer: true })
+      .map(({ key }) => key);
     return communityKeys.includes(presented) ? "community" : null;
   }
 

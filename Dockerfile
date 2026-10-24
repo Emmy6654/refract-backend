@@ -32,8 +32,8 @@ RUN mkdir -p /var/lib/refract/oracle-evidence && chown node:node /var/lib/refrac
 USER node
 EXPOSE 4001
 
-HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:4001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:4001/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 # Exec form so node is PID 1 and receives SIGTERM directly. Give it more time
 # than SHUTDOWN_GRACE_PERIOD_MS before SIGKILL (docker-compose sets

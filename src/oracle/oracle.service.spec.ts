@@ -3,7 +3,6 @@ import { ConfigService } from "@nestjs/config";
 import { CacheService } from "../cache/cache.service";
 import { OracleService } from "./oracle.service";
 import { AppConfig } from "../config/configuration";
-import { OracleAttestationService } from "./oracle-attestation.service";
 
 jest.mock("axios");
 const mockedAxios = axios as jest.Mocked<typeof axios>;
@@ -36,11 +35,7 @@ function buildService(): OracleService {
   const configService = {
     get: jest.fn().mockReturnValue(oraclesConfig),
   } as unknown as ConfigService<AppConfig, true>;
-  return new OracleService(
-    configService,
-    buildMockCacheService(),
-    new OracleAttestationService(Buffer.alloc(32, 7).toString("base64")),
-  );
+  return new OracleService(configService, buildMockCacheService());
 }
 
 describe("OracleService", () => {

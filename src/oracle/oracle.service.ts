@@ -1,12 +1,16 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { Injectable, Logger, Optional } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { randomUUID } from "node:crypto";
 import axios from "axios";
 import { CacheService, ORACLE_TTL } from "../cache/cache.service";
 import { AppConfig } from "../config/configuration";
+import {
+  COVERAGE_REQUIRED_FEEDS,
+  feedLatencyBudgetMs,
+} from "../config/oracle-feed.config";
+import { FeedPayloadValidator } from "./feed-payload.validator";
+import { OracleTrustService } from "./oracle-trust.service";
 import { OracleReading, Severity } from "./oracle-reading";
-import { AttestationInput, OracleAttestationService } from "./oracle-attestation.service";
-import { createHash } from "node:crypto";
-import { captureProviderPayload, CapturedProviderEvidence } from "./oracle-source-adapters";
 
 interface DefiLlamaTvlPoint {
   date: number; // unix seconds
@@ -61,12 +65,12 @@ export class OracleService {
   private readonly horizonUrl: string;
   private readonly defiLlamaBaseUrl: string;
   private readonly defiLlamaProtocolSlug: string;
-  private readonly strictAdapterSchemas: boolean;
+  private readonly feedValidator = new FeedPayloadValidator();
 
   constructor(
     private readonly configService: ConfigService<AppConfig, true>,
     private readonly cacheService: CacheService,
-    private readonly attestations: OracleAttestationService
+    @Optional() private readonly oracleTrustService?: OracleTrustService
   ) {
     const oracles = this.configService.get("oracles", { infer: true });
     this.timeoutMs = oracles.httpTimeoutMs;
@@ -74,7 +78,6 @@ export class OracleService {
     this.horizonUrl = oracles.horizonUrl;
     this.defiLlamaBaseUrl = oracles.defiLlamaBaseUrl;
     this.defiLlamaProtocolSlug = oracles.defiLlamaProtocolSlug;
-    this.strictAdapterSchemas = process.env.ORACLE_ADAPTER_STRICT_MODE === "true";
   }
 
   /**
@@ -100,14 +103,21 @@ export class OracleService {
    */
   async checkAllFresh(): Promise<OracleReading[]> {
     const readings = await this.runAllChecks();
+    for (const reading of readings) {
+      const feedId = reading.feedId ?? feedIdForCoverage(reading.coverageType);
+      if (feedId) {
+        this.oracleTrustService?.recordObservation(
+          feedId,
+          !reading.degraded,
+          reading.degraded ? reading.message : undefined,
+          reading.observedAt,
+        );
+      }
+    }
     // Proactively refresh the cache so a subsequent HTTP call within the
     // same cycle gets the scheduler's fresh data immediately.
     await this.cacheService.set(CACHE_KEY_CHECK_ALL, readings, ORACLE_TTL);
     return readings;
-  }
-
-  async refreshPrices(): Promise<OracleReading[]> {
-    return this.checkAllFresh();
   }
 
   private async runAllChecks(): Promise<OracleReading[]> {
@@ -119,16 +129,20 @@ export class OracleService {
   }
 
   async checkStablecoinDepeg(): Promise<OracleReading> {
+    const startedAt = Date.now();
     const threshold = 0.95; // 5% depeg
     try {
-      const { data } = await axios.get<unknown>(
+      const response = await axios.get<Record<string, { usd: number }>>(
         `${this.coingeckoBaseUrl}/simple/price`,
         { params: { ids: "usd-coin", vs_currencies: "usd" }, timeout: this.timeoutMs }
       );
-      const evidence = captureProviderPayload("coingecko", data, { strict: this.strictAdapterSchemas });
-      const providerPayload = evidence.payload as { "usd-coin"?: { usd: number } };
-      const usdcPrice = providerPayload["usd-coin"]?.usd;
-      if (usdcPrice === undefined) throw new Error("CoinGecko response is missing usd-coin.usd");
+      const observedAt = Date.now();
+      const { data } = response;
+      const usdcPrice = data["usd-coin"].usd;
+      this.feedValidator.validateAndRemember("coingecko-usdc", {
+        price: usdcPrice,
+        unit: "USD",
+      });
       const deviation = (1 - usdcPrice) * 100;
 
       const severity: Severity =
@@ -137,66 +151,51 @@ export class OracleService {
         : usdcPrice < 0.99   ? "medium"
         : "low";
 
-      return this.attest({
+      return this.withFeedTiming({
+        readingId: randomUUID(),
         coverageType: "StablecoinDepeg",
         type: "oracle_update",
         value: usdcPrice,
         threshold,
         severity,
         message: `USDC price: $${usdcPrice.toFixed(4)} (${deviation > 0 ? "-" : "+"}${Math.abs(deviation).toFixed(3)}% from peg) [CoinGecko]`,
-      }, "CoinGecko", [evidence]);
+        source: "coingecko",
+        timestamp: Math.floor(Date.now() / 1000),
+      }, "coingecko-usdc", startedAt, observedAt);
     } catch (err) {
       return this.degraded("StablecoinDepeg", threshold, "CoinGecko", err);
     }
   }
 
   async checkMarketCrash(): Promise<OracleReading> {
+    const startedAt = Date.now();
     const threshold = -30; // 30% crash triggers
     try {
-      const priceRequest = axios.get<unknown>(
+      const priceRequest = axios.get<Record<string, { usd: number; usd_24h_change: number }>>(
         `${this.coingeckoBaseUrl}/simple/price`,
         {
           params: { ids: "stellar", vs_currencies: "usd", include_24hr_change: true },
           timeout: this.timeoutMs,
         }
-      );
+      ).then((response) => ({ ...response, observedAt: Date.now() }));
       // Best-effort: attach real chain context, but never let a Horizon
       // hiccup fail the whole check — the price signal comes from CoinGecko.
       const ledgerRequest = axios
-        .get<unknown>(
+        .get<{ _embedded: { records: Array<{ sequence: number; closed_at: string }> } }>(
           `${this.horizonUrl}/ledgers`,
           { params: { order: "desc", limit: 1 }, timeout: this.timeoutMs }
         )
         .catch(() => null);
 
       const [priceRes, ledgerRes] = await Promise.all([priceRequest, ledgerRequest]);
-      const priceEvidence = captureProviderPayload("coingecko", priceRes.data, {
-        strict: this.strictAdapterSchemas,
+      const change24h = priceRes.data.stellar.usd_24h_change;
+      this.feedValidator.validateAndRemember("coingecko-stellar", {
+        price: priceRes.data.stellar.usd,
+        change24h,
+        unit: "USD",
+        changeUnit: "percent",
       });
-      const pricePayload = priceEvidence.payload as {
-        stellar?: { usd_24h_change: number };
-      };
-      const change24h = pricePayload.stellar?.usd_24h_change;
-      if (change24h === undefined) throw new Error("CoinGecko response is missing stellar.usd_24h_change");
-
-      let ledgerEvidence: CapturedProviderEvidence | undefined;
-      let ledger: { sequence: number; closed_at: string } | undefined;
-      if (ledgerRes) {
-        try {
-          ledgerEvidence = captureProviderPayload("horizon", ledgerRes.data, {
-            strict: this.strictAdapterSchemas,
-          });
-          const ledgerPayload = ledgerEvidence.payload as {
-            _embedded: { records: Array<{ sequence: number; closed_at: string }> };
-          };
-          ledger = ledgerPayload._embedded.records[0];
-        } catch (error) {
-          if (this.strictAdapterSchemas) throw error;
-          this.logger.warn(
-            `Ignoring unexpected Horizon context payload: ${error instanceof Error ? error.message : String(error)}`,
-          );
-        }
-      }
+      const ledger = ledgerRes?.data?._embedded?.records?.[0];
 
       const severity: Severity =
         change24h < threshold   ? "triggered"
@@ -208,32 +207,37 @@ export class OracleService {
         ? ` [CoinGecko; Horizon testnet ledger #${ledger.sequence} @ ${ledger.closed_at}]`
         : " [CoinGecko]";
 
-      return this.attest({
+      return this.withFeedTiming({
+        readingId: randomUUID(),
         coverageType: "MarketCrash",
         type: "oracle_update",
         value: change24h,
         threshold,
         severity,
         message: `XLM 24h change: ${change24h.toFixed(2)}% (trigger at ${threshold}%)${chainContext}`,
-      }, "CoinGecko", [
-        priceEvidence,
-        ...(ledgerEvidence ? [{ ...ledgerEvidence, eligible: false }] : []),
-      ]);
+        source: "coingecko",
+        timestamp: Math.floor(Date.now() / 1000),
+      }, "coingecko-stellar", startedAt, priceRes.observedAt);
     } catch (err) {
       return this.degraded("MarketCrash", threshold, "CoinGecko", err);
     }
   }
 
   async checkSmartContractRisk(): Promise<OracleReading> {
+    const startedAt = Date.now();
     const threshold = -50; // 50% TVL drop in 24h triggers
     try {
-      const { data } = await axios.get<unknown>(
+      const response = await axios.get<{ name?: string; tvl?: DefiLlamaTvlPoint[] }>(
         `${this.defiLlamaBaseUrl}/protocol/${this.defiLlamaProtocolSlug}`,
         { timeout: this.timeoutMs }
       );
-      const evidence = captureProviderPayload("defillama", data, { strict: this.strictAdapterSchemas });
-      const providerPayload = evidence.payload as { name?: string; tvl: DefiLlamaTvlPoint[] };
-      const points = providerPayload.tvl ?? [];
+      const observedAt = Date.now();
+      const { data } = response;
+      this.feedValidator.validateAndRemember("defillama-aave", {
+        tvl: data.tvl,
+        unit: "USD",
+      });
+      const points = data.tvl ?? [];
       if (points.length < 2) throw new Error("DeFiLlama returned insufficient TVL history");
 
       const latest = points[points.length - 1];
@@ -253,14 +257,17 @@ export class OracleService {
         : pctChange < -10    ? "medium"
         : "low";
 
-      return this.attest({
+      return this.withFeedTiming({
+        readingId: randomUUID(),
         coverageType: "SmartContractRisk",
         type: "oracle_update",
         value: pctChange,
         threshold,
         severity,
-        message:         `${providerPayload.name ?? this.defiLlamaProtocolSlug} TVL 24h change: ${pctChange.toFixed(2)}% (trigger at ${threshold}%) [DeFiLlama]`,
-      }, "DeFiLlama", [evidence]);
+        message: `${data.name ?? this.defiLlamaProtocolSlug} TVL 24h change: ${pctChange.toFixed(2)}% (trigger at ${threshold}%) [DeFiLlama]`,
+        source: "defillama",
+        timestamp: Math.floor(Date.now() / 1000),
+      }, "defillama-aave", startedAt, observedAt);
     } catch (err) {
       return this.degraded("SmartContractRisk", threshold, "DeFiLlama", err);
     }
@@ -275,15 +282,24 @@ export class OracleService {
     // sometimes — a ±0.05 spread around 0.92 never dips below 0.85.
     const collateralRatio = 0.92 + (Math.random() - 0.5) * 0.3;
     const threshold = 0.85; // shield triggers below 85% collateralization
+    this.feedValidator.validateAndRemember("nexus-liquidations", {
+      collateralRatio,
+      status: collateralRatio < threshold ? "liquidated" : "healthy",
+      unit: "ratio",
+    });
 
-    return this.attest({
+    return this.withFeedTiming({
+      readingId: randomUUID(),
       coverageType: "LiquidationShield",
       type: "oracle_update",
       value: collateralRatio,
       threshold,
       severity: collateralRatio < threshold ? "triggered" : "low",
       message: `Collateral ratio ${(collateralRatio * 100).toFixed(1)}% (shield triggers below ${(threshold * 100).toFixed(0)}%) [mocked — no NEXUS Protocol integration]`,
-    }, "mocked");
+      source: "mock",
+      timestamp: Math.floor(Date.now() / 1000),
+      degraded: true,
+    }, "nexus-liquidations", Date.now());
   }
 
   async checkFlightDelay(flightNumber: string): Promise<OracleReading> {
@@ -292,15 +308,41 @@ export class OracleService {
     // source is available. See README's "Oracle data sources" section.
     const delayMinutes = Math.floor(Math.random() * 300);
     const threshold = 120; // 2h delay triggers
+    this.feedValidator.validateAndRemember("aviationstack", {
+      flightNumber,
+      delayMinutes,
+      status: delayMinutes >= threshold ? "delayed" : "scheduled",
+      unit: "minutes",
+    });
 
-    return this.attest({
+    return this.withFeedTiming({
+      readingId: randomUUID(),
       coverageType: "FlightDelay",
       type: "oracle_update",
       value: delayMinutes,
       threshold,
       severity: delayMinutes >= threshold ? "triggered" : "low",
       message: `Flight ${flightNumber}: ${delayMinutes}m delay (trigger at ${threshold}m) [mocked — AviationStack requires a paid key]`,
-    }, "mocked");
+      source: "mock",
+      timestamp: Math.floor(Date.now() / 1000),
+      degraded: true,
+    }, "aviationstack", Date.now());
+  }
+
+  private withFeedTiming(
+    reading: OracleReading,
+    feedId: string,
+    startedAt: number,
+    observedAt: number = Date.now(),
+  ): OracleReading {
+    const budgets = this.configService.get("oracles", { infer: true }).feedLatencyBudgetsMs;
+    return {
+      ...reading,
+      feedId,
+      observedAt,
+      fetchDurationMs: observedAt - startedAt,
+      deadlineAt: observedAt + feedLatencyBudgetMs(feedId, budgets),
+    };
   }
 
   /**
@@ -315,62 +357,24 @@ export class OracleService {
       `${source} request failed for ${coverageType} check`,
       err instanceof Error ? err.message : String(err)
     );
-    return this.attest({
+    return {
+      readingId: randomUUID(),
       coverageType,
       type: "oracle_update",
       value: threshold,
       threshold,
       severity: "low",
       message: `${source} unavailable — degraded to a non-triggering reading`,
+      feedId: feedIdForCoverage(coverageType),
+      source: source.toLowerCase(),
+      timestamp: Math.floor(Date.now() / 1000),
       degraded: true,
-    }, source, [], false);
-  }
-
-  private attest(
-    reading: OracleReading,
-    adapter: string,
-    evidence: Array<CapturedProviderEvidence & { eligible?: boolean }> = [],
-    observed = true,
-  ): OracleReading {
-    const inputs: AttestationInput[] = evidence.length
-      ? evidence.map((item) => ({
-          adapter: item.adapter,
-          schemaVersion: item.schemaVersion,
-          digest: item.digest,
-          eligible: item.eligible,
-        }))
-      : observed
-        ? [
-          {
-            adapter: adapter.toLowerCase(),
-            schemaVersion: 1,
-            digest: createHash("sha256")
-              .update(JSON.stringify({
-                feed: reading.coverageType,
-                value: reading.value,
-                threshold: reading.threshold,
-                severity: reading.severity,
-                adapter,
-              }))
-              .digest("hex"),
-          },
-        ]
-        : [];
-    const attestation = this.attestations.createAttestation(reading, inputs);
-    return {
-      ...reading,
-      adapter: evidence[0]?.adapter ?? adapter.toLowerCase(),
-      schemaVersion: evidence[0]?.schemaVersion ?? 1,
-      evidenceRoot: attestation.evidenceRoot,
-      attestation: attestation.token,
-      attribution: evidence.map((item) => item.attribution).join("; ") || adapter,
-      evidence: evidence.map((item) => ({
-        adapter: item.adapter,
-        schemaVersion: item.schemaVersion,
-        digest: item.digest,
-        attribution: item.attribution,
-        sensitivity: item.policy.sensitivity,
-      })),
     };
   }
+}
+
+function feedIdForCoverage(coverageType: string): string | undefined {
+  return COVERAGE_REQUIRED_FEEDS[
+    coverageType as keyof typeof COVERAGE_REQUIRED_FEEDS
+  ]?.[0];
 }

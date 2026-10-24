@@ -1,8 +1,9 @@
 {
-  "name": "refract",
+  "name": "refract-protocol-backend",
   "version": "0.1.0",
+  "description": "Refract Protocol backend — oracle monitoring, claim processing, premium quoting",
+  "main": "dist/main.js",
   "private": true,
-  "description": "Refract oracle network monorepo",
   "workspaces": [
     "refract-backend",
     "refract-frontend",
@@ -11,11 +12,20 @@
   "main": "dist/main.js",
   "scripts": {
     "build": "nest build",
+    "dev": "nodemon --exec ts-node src/main.ts",
     "start": "nest start",
     "start:dev": "nest start --watch",
     "start:prod": "node dist/main",
+    "start:worker": "nest start --entryFile worker",
+    "start:worker:dev": "nest start --watch --entryFile worker",
+    "start:worker:prod": "node dist/worker",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint \"src/**/*.ts\"",
-    "test": "jest",
+    "test": "npm run test:unit && npm run test:contracts",
+    "test:watch": "jest --watch",
+    "test:cov": "jest --coverage",
+    "test:property": "jest --testRegex '.*\\.property\\.spec\\.ts$'",
+    "test:integration": "jest --config test/integration/jest.integration.config.ts --runInBand",
     "test:unit": "npm run test --workspaces --if-present",
     "test:contracts": "node test/contracts/verify.js",
     "test:contracts:update": "node test/contracts/verify.js --update",
@@ -26,30 +36,14 @@
     "migrate:down": "node-pg-migrate down --migrations-dir migrations --config-file database.json",
     "migrate:create": "node-pg-migrate create --migrations-dir migrations --config-file database.json",
     "migrate:status": "node-pg-migrate status --migrations-dir migrations --config-file database.json",
-    "test:watch": "jest --watch",
-    "test:cov": "jest --coverage",
     "soroban:up": "docker compose -f test/soroban/docker-compose.yml up -d --wait",
     "soroban:down": "docker compose -f test/soroban/docker-compose.yml down -v",
     "soroban:bootstrap": "ts-node scripts/soroban-bootstrap.ts",
     "test:soroban": "jest --config test/soroban/jest.soroban.config.js",
-    "regenerate:xdr-fixtures": "ts-node scripts/regenerate-xdr-fixtures.ts",
-    "test:integration": "jest --config test/integration/jest.integration.config.ts --runInBand",
-    "verify:oracle-attestation": "node scripts/verify-oracle-attestation.mjs"
+    "regenerate:xdr-fixtures": "ts-node scripts/regenerate-xdr-fixtures.ts"
   },
   "engines": {
     "node": ">=18"
-  },
-  "jest": {
-    "preset": "ts-jest",
-    "testEnvironment": "node",
-    "rootDir": "src",
-    "testRegex": ".*\\.spec\\.ts$",
-    "moduleFileExtensions": ["js", "json", "ts"],
-    "transform": {
-      "^.+\\.(t|j)s$": "ts-jest"
-    },
-    "collectCoverageFrom": ["**/*.(t|j)s"],
-    "coverageDirectory": "../coverage"
   },
   "dependencies": {
     "@aws-sdk/client-secrets-manager": "^3.1142.0",
@@ -77,7 +71,7 @@
     "pg": "^8.11.3",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2",
-    "uuid": "^9.0.0",
+    "uuid": "^14.0.3",
     "winston": "^3.11.0",
     "ws": "^8.16.0",
     "zod": "^3.22.4"
@@ -105,7 +99,41 @@
     "source-map-support": "^0.5.21",
     "supertest": "^7.2.2",
     "ts-jest": "^29.4.11",
+    "ts-loader": "^9.4.3",
     "ts-node": "^10.9.2",
+    "tsconfig-paths": "^4.1.0",
     "typescript": "^5.3.2"
+  },
+  "jest": {
+    "preset": "ts-jest",
+    "testEnvironment": "node",
+    "rootDir": "src",
+    "testRegex": ".*\\.spec\\.ts$",
+    "testMatch": [
+      "**/src/**/*.spec.ts"
+    ],
+    "moduleFileExtensions": [
+      "js",
+      "json",
+      "ts"
+    ],
+    "transform": {
+      "^.+\\.ts$": "ts-jest",
+      "^.+\\.js$": [
+        "babel-jest",
+        {
+          "plugins": [
+            "@babel/plugin-transform-modules-commonjs"
+          ]
+        }
+      ]
+    },
+    "transformIgnorePatterns": [
+      "/node_modules/(?!(?:@stellar/stellar-sdk|@noble/.*|@scure/.*|uint8array-extras|hexoid|bignumber.js|@stellar|@noble|@scure|stellar-base|crc|tweetnacl|base32.js|@adraffy|@noble/curves))"
+    ],
+    "collectCoverageFrom": [
+      "**/*.(t|j)s"
+    ],
+    "coverageDirectory": "../coverage"
   }
 }

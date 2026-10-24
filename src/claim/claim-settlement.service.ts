@@ -1,6 +1,8 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { BASE_FEE, Contract, Keypair, TransactionBuilder, nativeToScVal, rpc } from "@stellar/stellar-sdk";
+import { decodeSorobanError } from "../common/soroban-error";
 import { AppConfig } from "../config/configuration";
 import { pollForConfirmation } from "../stellar/soroban-confirmation.util";
 
@@ -8,6 +10,7 @@ export interface SettlementResult {
   settled: boolean;
   txHash?: string;
   error?: string;
+  code?: string;
 }
 
 /**
@@ -22,26 +25,42 @@ export class ClaimSettlementService {
   private readonly server: rpc.Server;
   private readonly networkPassphrase: string;
   private readonly poolContractId: string;
-  private readonly relayerKeypair: Keypair | null;
+  private readonly relayerSecret: string;
+  private readonly relayerSecretId: string;
+  private readonly relayerSecretRegion: string;
 
   constructor(private readonly configService: ConfigService<AppConfig, true>) {
     const stellar = this.configService.get("stellar", { infer: true });
     this.server = new rpc.Server(stellar.sorobanRpcUrl);
     this.networkPassphrase = stellar.networkPassphrase;
     this.poolContractId = stellar.poolContractId;
-    this.relayerKeypair = stellar.relayerSecret ? Keypair.fromSecret(stellar.relayerSecret) : null;
+    this.relayerSecret = (stellar.relayerSecret ?? "").trim();
+    this.relayerSecretId = (stellar.relayerSecretId ?? "").trim();
+    this.relayerSecretRegion = (stellar.relayerSecretRegion ?? "us-east-1").trim() || "us-east-1";
   }
 
-  /** True once a pool contract ID and relayer secret are configured. */
   isConfigured(): boolean {
-    return Boolean(this.poolContractId && this.relayerKeypair);
+    return Boolean(this.poolContractId && (this.relayerSecret || this.relayerSecretId));
+  }
+
+  private async resolveRelayerKeypair(): Promise<Keypair | null> {
+    const secret = this.relayerSecret || (await this.loadSecretFromAws());
+    if (!secret) return null;
+    return Keypair.fromSecret(secret);
+  }
+
+  private async loadSecretFromAws(): Promise<string> {
+    if (!this.relayerSecretId) return "";
+    const client = new SecretsManagerClient({ region: this.relayerSecretRegion });
+    const response = await client.send(new GetSecretValueCommand({ SecretId: this.relayerSecretId }));
+    return response.SecretString ?? "";
   }
 
   async settleClaim(policyId: string): Promise<SettlementResult> {
-    if (!this.relayerKeypair || !this.poolContractId) {
+    if (!this.poolContractId || !(this.relayerSecret || this.relayerSecretId)) {
       return {
         settled: false,
-        error: "Soroban relayer not configured (missing REFRACT_POOL_CONTRACT_ID or ORACLE_RELAYER_SECRET)",
+        error: "Soroban relayer not configured (missing REFRACT_POOL_CONTRACT_ID or ORACLE_RELAYER_SECRET / ORACLE_RELAYER_SECRET_ID)",
       };
     }
 
@@ -50,9 +69,13 @@ export class ClaimSettlementService {
     }
 
     try {
-      const sourceAccount = await this.server.getAccount(this.relayerKeypair.publicKey());
-      const contract = new Contract(this.poolContractId);
+      const keypair = await this.resolveRelayerKeypair();
+      if (!keypair) {
+        return { settled: false, error: "Soroban relayer not configured (missing relayer secret)" };
+      }
 
+      const sourceAccount = await this.server.getAccount(keypair.publicKey());
+      const contract = new Contract(this.poolContractId);
       const operation = contract.call("process_claim", nativeToScVal(BigInt(policyId), { type: "u64" }));
 
       const builtTx = new TransactionBuilder(sourceAccount, {
@@ -64,11 +87,15 @@ export class ClaimSettlementService {
         .build();
 
       const preparedTx = await this.server.prepareTransaction(builtTx);
-      preparedTx.sign(this.relayerKeypair);
+      preparedTx.sign(keypair);
 
       const sendResult = await this.server.sendTransaction(preparedTx);
-      if (sendResult.status === "ERROR" || sendResult.status === "TRY_AGAIN_LATER") {
-        return { settled: false, error: `Submission not accepted: ${sendResult.status}` };
+      if (sendResult.status === "ERROR" || sendResult.status === "TRY_AGAIN_LATER" || sendResult.status === "FAILED") {
+        return {
+          settled: false,
+          txHash: sendResult.hash,
+          ...decodeSorobanError((sendResult as { errorResult?: unknown }).errorResult ?? sendResult),
+        };
       }
 
       const confirmation = await pollForConfirmation(this.server, sendResult.hash);
@@ -76,7 +103,11 @@ export class ClaimSettlementService {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.error(`Soroban settlement failed for policy ${policyId}`, message);
-      return { settled: false, error: message };
+      return {
+        settled: false,
+        code: "SOROBAN_REQUEST_FAILED",
+        error: "The Soroban request failed. Please retry later or contact support.",
+      };
     }
   }
 }

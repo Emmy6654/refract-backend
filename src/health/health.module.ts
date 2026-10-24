@@ -1,24 +1,14 @@
 import { Module } from "@nestjs/common";
-import { StellarModule } from "../stellar/stellar.module";
+import { CacheModule } from "../cache/cache.module";
+import { DbModule } from "../db/db.module";
 import { HealthController } from "./health.controller";
 import { HealthService } from "./health.service";
-import { SorobanRpcService } from "../stellar/soroban-rpc.service";
-import { OracleService } from "../oracle/oracle.service";
-import { ClaimSettlementService } from "../claim/claim-settlement.service";
-import { OracleAttestationService } from "../oracle/oracle-attestation.service";
+import { OracleTrustModule } from "../oracle/oracle-trust.module";
 
-// DatabaseModule is @Global(), so DatabaseService is available here
-// without a local import — the controller receives it via DI automatically.
 @Module({
-  imports: [StellarModule],
+  imports: [CacheModule, DbModule, OracleTrustModule],
   controllers: [HealthController],
-  providers: [
-    HealthService,
-    SorobanRpcService,
-    OracleService,
-    OracleAttestationService,
-    ClaimSettlementService,
-  ],
+  providers: [HealthService],
   exports: [HealthService],
 })
 export class HealthModule {}
