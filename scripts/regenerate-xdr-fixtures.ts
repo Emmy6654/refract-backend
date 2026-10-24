@@ -19,6 +19,7 @@ import {
   encodeProvideCapitalArgs,
   encodeWithdrawCapitalArgs,
 } from "../src/stellar/scval-encoders";
+import { TrustTier, buildUpdateReadingArgs, encodeReadingForChain } from "../src/oracle/oracle-encoding";
 
 const outDir = path.join(__dirname, "../src/stellar/xdr-fixtures");
 
@@ -438,6 +439,16 @@ const [feed, value, ts] = encodeOraclePublishArgs("USDC_USD", 9_500_000n, 1_700_
 writeB64("oracle-publish-feed.xdr.b64", feed);
 writeB64("oracle-publish-value.xdr.b64", value);
 writeB64("oracle-publish-timestamp.xdr.b64", ts);
+
+const [, , provenance] = buildUpdateReadingArgs(
+  encodeReadingForChain("StablecoinDepeg", 0.9998, {
+    trustTier: TrustTier.Corroborated,
+    agreeingSources: 3,
+    decisionId: "0123456789abcdef",
+    sourceTimestamp: 1_700_000_000,
+  })
+);
+writeB64("oracle-update-reading-provenance.xdr.b64", provenance, "u128 provenance: Corroborated, 3 sources, ts=1700000000");
 
 // silence unused import if tree-shaken oddly
 void Address;

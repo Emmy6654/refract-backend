@@ -62,13 +62,15 @@ export class OracleGateway
     this.clients.set(client, state);
     this.startTimers();
 
-    client.on('error', (err) => {
-      this.logger.warn(`Oracle WebSocket client error: ${err.message}`);
-    });
-    client.on('pong', () => {
-      state.alive = true;
-    });
-    client.on('message', (data) => this.onMessage(client, state, data.toString()));
+    if (typeof client.on === 'function') {
+      client.on('error', (err) => {
+        this.logger.warn(`Oracle WebSocket client error: ${err.message}`);
+      });
+      client.on('pong', () => {
+        state.alive = true;
+      });
+      client.on('message', (data) => this.onMessage(client, state, data.toString()));
+    }
 
     // Snapshot first, so clients need no racing REST bootstrap.
     this.safeSend(client, {
@@ -79,6 +81,35 @@ export class OracleGateway
         .filter((e) => this.matches(state, e))
         .map((e) => this.view(state, e)),
     });
+
+    this.safeSend(client, { type: 'connected', message: 'Refract oracle feed' });
+  }
+
+  /**
+   * Push a reading to every open client. In a split deployment the readings
+   * come from the worker via the ReadingBus (see OracleFeedRelay); this
+   * process never polls upstreams itself.
+   */
+  broadcastAlert(alert: OracleReading): void {
+    if (!this.server?.clients) {
+      return;
+    }
+    const payload = JSON.stringify({ ...alert, timestamp: Date.now() });
+    let sent = 0;
+    for (const client of this.server.clients) {
+      if (client.readyState !== WebSocket.OPEN) continue;
+      // send() can throw for a socket that is mid-close; one bad client must
+      // not stop the broadcast to everyone else.
+      try {
+        client.send(payload);
+        sent++;
+      } catch (err) {
+        this.logger.warn(
+          `Failed to send oracle alert to a client: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    this.logger.debug(`Broadcast ${alert.coverageType} alert to ${sent} client(s)`);
   }
 
   handleDisconnect(client: WebSocket): void {
