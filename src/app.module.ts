@@ -29,6 +29,8 @@ import { AuthModule } from './auth/auth.module';
 import { ApiKeyGuard } from './auth/api-key.guard';
 import { SecurityReportsModule } from './security-reports/security-reports.module';
 import { DigestModule } from './digest/digest.module';
+import { ReadingBusModule } from './oracle/reading-bus.module';
+import { OracleFeedModule } from './oracle/oracle-feed.module';
 import { OracleIngestionModule } from './oracle/sources/oracle-ingestion.module';
 import { OracleRegionsModule } from './oracle/regions/oracle-regions.module';
 import { ReevaluationModule } from './claim/reevaluation/reevaluation.module';
@@ -87,6 +89,9 @@ export const isSandboxMode = (): boolean =>
     // Global: per-adapter endpoint lists with health-based failover.
     ProviderEndpointsModule,
     OracleModule,
+    // Read side of the oracle: relays readings the worker publishes.
+    ReadingBusModule,
+    OracleFeedModule,
     OracleBootstrapModule,
     OracleAdminModule,
     ConsensusModule,

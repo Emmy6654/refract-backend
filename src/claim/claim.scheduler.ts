@@ -1,8 +1,12 @@
-import { Injectable, Logger, OnApplicationShutdown, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnApplicationShutdown, OnModuleInit, Optional } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { ClaimService, ScanOutcome } from './claim.service';
 import { ProtocolParametersService } from '../parameters/protocol-parameters.service';
+import { runsPipeline } from '../runtime/process-role';
+import { PipelineHeartbeat } from '../runtime/pipeline-heartbeat';
 import { LeaderElector } from '../leader/leader-elector.service';
+
+export const CLAIM_PIPELINE_STAGE = 'claim-settlement';
 
 /**
  * Upper bound (ms) we are willing to wait for an in-flight settlement run to
@@ -31,16 +35,26 @@ export class ClaimScheduler implements OnModuleInit, OnApplicationShutdown {
   constructor(
     private readonly claimService: ClaimService,
     private readonly protocolParameters: ProtocolParametersService,
+    @Optional() private readonly heartbeat?: PipelineHeartbeat,
     private readonly leaderElector: LeaderElector,
   ) {}
 
   async onModuleInit(): Promise<void> {
+    if (!runsPipeline()) {
+      this.logger.log('Claim settlement disabled in this process (PROCESS_ROLE=api)');
+      return;
+    }
+    this.heartbeat?.expect(CLAIM_PIPELINE_STAGE);
     const interval = await this.getIntervalSeconds();
     this.logger.log(`Claim scheduler initialized with interval ${interval}s`);
   }
 
   async onApplicationShutdown(signal?: string): Promise<void> {
     this.shuttingDown = true;
+
+    if (!this.inFlight) {
+      return;
+    }
 
     this.logger.log(
       `ClaimScheduler shutdown (${signal ?? 'unknown'}): waiting up to ${SHUTDOWN_DRAIN_TIMEOUT_MS}ms for in-flight settlement run to finish.`,
@@ -71,6 +85,11 @@ export class ClaimScheduler implements OnModuleInit, OnApplicationShutdown {
 
   @Cron(CronExpression.EVERY_MINUTE)
   async handleClaimSettlement(): Promise<void> {
+    // Settlement triggers payouts, so it only runs in the worker tier.
+    if (!runsPipeline()) {
+      return;
+    }
+
     if (this.shuttingDown) {
       this.logger.log(
         'Skipping claim settlement run: scheduler is shutting down.',
@@ -117,6 +136,7 @@ export class ClaimScheduler implements OnModuleInit, OnApplicationShutdown {
       if (outcome.settled.length > 0) {
         this.logger.log(`Settled ${outcome.settled.length} claims this cycle`);
       }
+      this.heartbeat?.beat(CLAIM_PIPELINE_STAGE);
     } catch (error) {
       this.logger.error("Claim scan failed", error instanceof Error ? error.stack : String(error));
     }
