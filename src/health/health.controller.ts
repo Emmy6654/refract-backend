@@ -7,6 +7,10 @@ import { HealthService } from "./health.service";
 export class HealthController {
   constructor(private readonly healthService: HealthService) {}
 
+  /**
+   * @deprecated Use GET /health/live or GET /health/ready instead.
+   * Retained for backward compatibility.
+   */
   @Public()
   @Get()
   getHealth() {
@@ -18,6 +22,10 @@ export class HealthController {
     };
   }
 
+  /**
+   * Process-level liveness only. Never touches a dependency, so a transient
+   * dependency outage can never cause an orchestrator to kill a healthy pod.
+   */
   @Public()
   @Get("live")
   @HttpCode(HttpStatus.OK)
@@ -25,6 +33,10 @@ export class HealthController {
     return this.healthService.getLiveness();
   }
 
+  /**
+   * Aggregated readiness across database, Redis, Soroban RPC and Stellar
+   * configuration. Returns 503 when any required dependency is not ready.
+   */
   @Public()
   @Get("ready")
   async getReadiness(@Res({ passthrough: true }) res: Response) {
@@ -33,6 +45,10 @@ export class HealthController {
     return result;
   }
 
+  /**
+   * Detailed per-dependency report. Authenticated (no @Public decorator) and
+   * never exposes the relayer secret — only the derived public key.
+   */
   @Get("detail")
   async getDetail() {
     return this.healthService.getDetail();

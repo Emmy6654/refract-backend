@@ -1,11 +1,14 @@
 import {
   IsString,
   IsNotEmpty,
-  Min,
+  IsOptional,
+  IsNumber,
   IsInt,
+  Min,
   Max,
   Matches,
   Length,
+  IsObject,
   Validate,
   ValidateIf,
   ValidationArguments,
@@ -41,6 +44,15 @@ export class BuyPolicyDto {
   @IsNotEmpty()
   @IsStellarPublicKey()
   holder!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  policyId!: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  premium?: number;
 
   @IsInt()
   @Min(0)
@@ -88,6 +100,8 @@ export class PreflightPolicyDto {
   @Max(365)
   durationDays!: number;
 
+  @IsOptional()
+  @IsObject()
   @ValidateIf((obj) => obj.triggerParams !== undefined)
   @Validate(TriggerParamsConstraint)
   triggerParams?: Record<string, unknown>;

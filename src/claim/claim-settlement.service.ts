@@ -4,6 +4,7 @@ import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-sec
 import { BASE_FEE, Contract, Keypair, TransactionBuilder, nativeToScVal, rpc } from "@stellar/stellar-sdk";
 import { decodeSorobanError } from "../common/soroban-error";
 import { AppConfig } from "../config/configuration";
+import { pollForConfirmation } from "../stellar/soroban-confirmation.util";
 
 export interface SettlementResult {
   settled: boolean;
@@ -12,6 +13,12 @@ export interface SettlementResult {
   code?: string;
 }
 
+/**
+ * Builds, signs, and submits the pool.process_claim() Soroban transaction.
+ * Its deployed interface accepts only a u64 on-chain policy ID. Policy
+ * records currently use off-chain UUIDs until buy_policy is wired to persist
+ * its on-chain return value, so those records are rejected before submission.
+ */
 @Injectable()
 export class ClaimSettlementService {
   private readonly logger = new Logger(ClaimSettlementService.name);
@@ -70,6 +77,7 @@ export class ClaimSettlementService {
       const sourceAccount = await this.server.getAccount(keypair.publicKey());
       const contract = new Contract(this.poolContractId);
       const operation = contract.call("process_claim", nativeToScVal(BigInt(policyId), { type: "u64" }));
+
       const builtTx = new TransactionBuilder(sourceAccount, {
         fee: BASE_FEE,
         networkPassphrase: this.networkPassphrase,
@@ -90,34 +98,8 @@ export class ClaimSettlementService {
         };
       }
 
-      const txHash = sendResult.hash;
-      for (let attempt = 0; attempt < 20; attempt += 1) {
-        const tx = await this.server.getTransaction(txHash);
-        if (tx.status === rpc.Api.GetTransactionStatus.SUCCESS) {
-          return { settled: true, txHash };
-        }
-        if (tx.status === rpc.Api.GetTransactionStatus.FAILED) {
-          return {
-            settled: false,
-            txHash,
-            code: "TRANSACTION_FAILED",
-            error: "The transaction failed on-chain.",
-          };
-        }
-        if (tx.status === rpc.Api.GetTransactionStatus.NOT_FOUND) {
-          if (attempt === 19) {
-            return {
-              settled: false,
-              txHash,
-              code: "CONFIRMATION_TIMEOUT",
-              error: "Timed out waiting for transaction confirmation.",
-            };
-          }
-          await new Promise((resolve) => setTimeout(resolve, 50));
-        }
-      }
-
-      return { settled: false, txHash, code: "CONFIRMATION_TIMEOUT", error: "Timed out waiting for transaction confirmation." };
+      const confirmation = await pollForConfirmation(this.server, sendResult.hash);
+      return { settled: confirmation.confirmed, txHash: confirmation.txHash, error: confirmation.error };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.error(`Soroban settlement failed for policy ${policyId}`, message);
