@@ -206,13 +206,20 @@ export class PolicyService {
   }
 
   async onChainCoverageBounds(): Promise<{ minCoverage: bigint; maxCoverage: bigint } | null> {
-    if (!this.poolContractId) return null;
+    if (!this.poolContractId) {
+      return null;
+    }
     try {
-      const tx = new TransactionBuilder(new Account(Keypair.random().publicKey(), "0"), {
+      // pool_config() is a stateless view with no caller-specific args, so
+      // the source account only needs to be well-formed for the tx
+      // envelope — it never touches the network, unlike getAccount().
+      const dummySource = new Account(Keypair.random().publicKey(), "0");
+      const contract = new Contract(this.poolContractId);
+      const tx = new TransactionBuilder(dummySource, {
         fee: BASE_FEE,
         networkPassphrase: this.networkPassphrase,
       })
-        .addOperation(new Contract(this.poolContractId).call("pool_config"))
+        .addOperation(contract.call("pool_config"))
         .setTimeout(30)
         .build();
 

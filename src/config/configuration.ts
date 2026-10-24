@@ -12,6 +12,9 @@
 import { z } from "zod";
 import { validateEnv } from "./env.schema";
 
+/** Fee-estimation profiles exposed by FeeStrategyService. */
+export type FeeProfileName = "moderate" | "aggressive";
+
 const NETWORK_CONFIG: Record<
   string,
   { sorobanRpcUrl: string; horizonUrl: string; networkPassphrase: string }
@@ -95,6 +98,34 @@ const appConfigSchema = z.object({
     mode: z.enum(["every_poll", "on_change"]),
     minIntervalMs: z.number().int(),
   }),
+  fees: z.object({
+    ceilingStroops: z.string(),
+    statsTtlMs: z.number().int(),
+    profiles: z.record(
+      z.enum(["moderate", "aggressive"]),
+      z.object({ percentile: z.number().int(), multiplier: z.number() }),
+    ),
+  }),
+  eventIndexer: z.object({
+    enabled: z.boolean(),
+    pollIntervalMs: z.number().int(),
+    lagAlertLedgers: z.number().int(),
+    pageLimit: z.number().int(),
+  }),
+  ops: z.object({
+    apiToken: z.string(),
+    communityApiKeys: z.array(z.string()),
+  }),
+  adminApiKey: z.string(),
+  communityApiKeys: z.array(
+    z.object({
+      key: z.string(),
+      scope: z.literal("community"),
+      contact: z.string(),
+      rateLimitPerMinute: z.number().int(),
+      createdAt: z.string(),
+    }),
+  ),
   throttle: z.object({
     /**
      * Named throttling tiers, each expressed as `{ limit, ttl }` where
@@ -118,7 +149,12 @@ const appConfigSchema = z.object({
      * collapse every caller onto the load balancer's address.
      */
     trustProxy: z.boolean(),
+    upstream: z.object({ ttl: z.number().int(), limit: z.number().int() }),
+    chain: z.object({ ttl: z.number().int(), limit: z.number().int() }),
+    default: z.object({ ttl: z.number().int(), limit: z.number().int() }),
+    catalog: z.object({ ttl: z.number().int(), limit: z.number().int() }),
   }),
+  policyPendingTtlMs: z.number().int(),
 });
 
 export type AppConfig = z.infer<typeof appConfigSchema>;
@@ -206,18 +242,6 @@ export default (): AppConfig => {
         pageLimit: env.EVENT_INDEXER_PAGE_LIMIT ?? 100,
       },
     },
-    oracles: {
-      coingeckoBaseUrl:
-        env.COINGECKO_BASE_URL ?? "https://api.coingecko.com/api/v3",
-      horizonUrl: env.STELLAR_HORIZON_URL ?? selected.horizonUrl,
-      defiLlamaBaseUrl: env.DEFILLAMA_BASE_URL ?? "https://api.llama.fi",
-      // Placeholder "covered protocol" for the SmartContractRisk TVL-drop
-      // check until Refract defines a real list of covered Soroban
-      // protocols. Defaults to a large, consistently-tracked protocol so
-      // the drop-detection logic has real data to run against.
-      defiLlamaProtocolSlug: env.DEFILLAMA_PROTOCOL_SLUG ?? "aave",
-      httpTimeoutMs: env.ORACLE_HTTP_TIMEOUT_MS ?? 5000,
-    },
     confirmation: {
       initialIntervalMs: env.CONFIRMATION_INITIAL_INTERVAL_MS ?? 10,
       backoffMultiplier: env.CONFIRMATION_BACKOFF_MULTIPLIER ?? 1.5,
@@ -231,6 +255,47 @@ export default (): AppConfig => {
       mode: env.ORACLE_PUBLISH_MODE ?? "every_poll",
       minIntervalMs: env.ORACLE_PUBLISH_MIN_INTERVAL_MS ?? 0,
     },
+    oracles: {
+      coingeckoBaseUrl:
+        env.COINGECKO_BASE_URL ?? "https://api.coingecko.com/api/v3",
+      horizonUrl: env.STELLAR_HORIZON_URL ?? selected.horizonUrl,
+      defiLlamaBaseUrl: env.DEFILLAMA_BASE_URL ?? "https://api.llama.fi",
+      // Placeholder "covered protocol" for the SmartContractRisk TVL-drop
+      // check until Refract defines a real list of covered Soroban
+      // protocols. Defaults to a large, consistently-tracked protocol so
+      // the drop-detection logic has real data to run against.
+      defiLlamaProtocolSlug: env.DEFILLAMA_PROTOCOL_SLUG ?? "aave",
+      httpTimeoutMs: env.ORACLE_HTTP_TIMEOUT_MS ?? 5000,
+    },
+    fees: {
+      ceilingStroops: process.env.FEE_CEILING_STROOPS || "1000000",
+      statsTtlMs: parseInt(process.env.FEE_STATS_TTL_MS || "15000", 10),
+      profiles: {
+        moderate: {
+          percentile: parseInt(process.env.FEE_MODERATE_PERCENTILE || "90", 10),
+          multiplier: parseFloat(process.env.FEE_MODERATE_MULTIPLIER || "1.2"),
+        },
+        aggressive: {
+          percentile: parseInt(process.env.FEE_AGGRESSIVE_PERCENTILE || "99", 10),
+          multiplier: parseFloat(process.env.FEE_AGGRESSIVE_MULTIPLIER || "1.5"),
+        },
+      },
+    },
+    eventIndexer: {
+      enabled: process.env.EVENT_INDEXER_ENABLED !== "false",
+      pollIntervalMs: parseInt(process.env.EVENT_INDEXER_POLL_INTERVAL_MS || "5000", 10),
+      lagAlertLedgers: parseInt(process.env.EVENT_INDEXER_LAG_ALERT_LEDGERS || "7200", 10),
+      pageLimit: parseInt(process.env.EVENT_INDEXER_PAGE_LIMIT || "200", 10),
+    },
+    ops: {
+      apiToken: process.env.OPS_API_TOKEN || "",
+      communityApiKeys: (process.env.COMMUNITY_API_KEYS || "")
+        .split(",")
+        .map((k) => k.trim())
+        .filter(Boolean),
+    },
+    adminApiKey: process.env.ADMIN_API_KEY || "",
+    communityApiKeys: [],
     throttle: {
       tiers: {
         strict: {
@@ -251,6 +316,23 @@ export default (): AppConfig => {
         },
       },
       trustProxy: env.TRUST_PROXY === true,
+      upstream: {
+        ttl: parseInt(process.env.THROTTLE_UPSTREAM_TTL_MS || "60000", 10),
+        limit: parseInt(process.env.THROTTLE_UPSTREAM_LIMIT || "60", 10),
+      },
+      chain: {
+        ttl: parseInt(process.env.THROTTLE_CHAIN_TTL_MS || "60000", 10),
+        limit: parseInt(process.env.THROTTLE_CHAIN_LIMIT || "20", 10),
+      },
+      default: {
+        ttl: parseInt(process.env.THROTTLE_DEFAULT_TTL_MS || "60000", 10),
+        limit: parseInt(process.env.THROTTLE_DEFAULT_LIMIT || "600", 10),
+      },
+      catalog: {
+        ttl: parseInt(process.env.THROTTLE_CATALOG_TTL_MS || "60000", 10),
+        limit: parseInt(process.env.THROTTLE_CATALOG_LIMIT || "300", 10),
+      },
     },
+    policyPendingTtlMs: parseInt(process.env.POLICY_PENDING_TTL_MS || "3600000", 10),
   };
 };
