@@ -3,6 +3,8 @@ import {
   IsObject,
   IsOptional,
   IsString,
+  IsNotEmpty,
+  IsNumber,
   Length,
   Matches,
   Max,
@@ -16,11 +18,21 @@ export class BuyPolicyDto {
   @IsStellarPublicKey()
   holder!: string;
 
+  @IsString()
+  @IsNotEmpty()
+  policyId!: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  premium?: number;
+
   @IsInt()
   @Min(0)
   @Max(4)
   coverageType!: number;
 
+  /** USDC amount in 1e7 base units, passed as a decimal string to avoid precision loss. */
   @IsString()
   @Matches(/^\d+$/)
   coverageAmount!: string;
@@ -35,4 +47,12 @@ export class BuyPolicyDto {
   triggerParams?: Record<string, unknown>;
 }
 
+/**
+ * Request body for the read-only policy purchase preflight.
+ *
+ * Mirrors the fields `BuyPolicyDto` needs to evaluate every contract-enforced
+ * condition (capacity, utilization, coverage bounds, duration, premium balance)
+ * without building or returning an XDR.
+ */
 export class PreflightPolicyDto extends BuyPolicyDto {}
+</｜｜DSML｜｜ parameter>

@@ -22,6 +22,8 @@ import { AppConfig } from "../config/configuration";
  */
 export const ORACLE_TTL = 55;
 
+export const ORACLE_TTL = 55;
+
 @Injectable()
 export class CacheService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(CacheService.name);
@@ -76,6 +78,16 @@ export class CacheService implements OnModuleInit, OnModuleDestroy {
     } catch (err) {
       this.logger.warn(`cache.del(${keys.join(",")}) failed: ${(err as Error).message}`);
     }
+  }
+
+  async wrap<T>(key: string, ttlSeconds: number, loader: () => Promise<T>): Promise<T> {
+    const cached = await this.get<T>(key);
+    if (cached !== null) {
+      return cached;
+    }
+    const value = await loader();
+    await this.set(key, value, ttlSeconds);
+    return value;
   }
 
   /**
