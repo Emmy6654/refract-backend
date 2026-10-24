@@ -1,3 +1,20 @@
+x-backend-env: &backend-env
+  FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+  DATABASE_URL: postgresql://refract:${POSTGRES_PASSWORD:-refract_dev}@postgres:5432/refract
+  REDIS_URL: redis://redis:6379
+  STELLAR_NETWORK: ${STELLAR_NETWORK:-testnet}
+  SOROBAN_RPC_URL: ${SOROBAN_RPC_URL:-https://soroban-testnet.stellar.org}
+  STELLAR_NETWORK_PASSPHRASE: ${STELLAR_NETWORK_PASSPHRASE:-Test SDF Network ; September 2015}
+  REFRACT_POOL_CONTRACT_ID: ${REFRACT_POOL_CONTRACT_ID:-}
+  REFRACT_POLICY_CONTRACT_ID: ${REFRACT_POLICY_CONTRACT_ID:-}
+  REFRACT_ORACLE_CONTRACT_ID: ${REFRACT_ORACLE_CONTRACT_ID:-}
+  ORACLE_RELAYER_SECRET: ${ORACLE_RELAYER_SECRET:-}
+  COINGECKO_BASE_URL: ${COINGECKO_BASE_URL:-https://api.coingecko.com/api/v3}
+  STELLAR_HORIZON_URL: ${STELLAR_HORIZON_URL:-https://horizon-testnet.stellar.org}
+  DEFILLAMA_BASE_URL: ${DEFILLAMA_BASE_URL:-https://api.llama.fi}
+  DEFILLAMA_PROTOCOL_SLUG: ${DEFILLAMA_PROTOCOL_SLUG:-aave}
+  ORACLE_HTTP_TIMEOUT_MS: ${ORACLE_HTTP_TIMEOUT_MS:-5000}
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -61,22 +78,11 @@ services:
     # before Docker sends SIGKILL (the default is only 10s).
     stop_grace_period: 40s
     environment:
+      <<: *backend-env
       PORT: 4001
-      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
-      DATABASE_URL: postgresql://refract:${POSTGRES_PASSWORD:-refract_dev}@postgres:5432/refract
-      REDIS_URL: redis://redis:6379
-      STELLAR_NETWORK: ${STELLAR_NETWORK:-testnet}
-      SOROBAN_RPC_URL: ${SOROBAN_RPC_URL:-https://soroban-testnet.stellar.org}
-      STELLAR_NETWORK_PASSPHRASE: ${STELLAR_NETWORK_PASSPHRASE:-Test SDF Network ; September 2015}
-      REFRACT_POOL_CONTRACT_ID: ${REFRACT_POOL_CONTRACT_ID:-}
-      REFRACT_POLICY_CONTRACT_ID: ${REFRACT_POLICY_CONTRACT_ID:-}
-      REFRACT_ORACLE_CONTRACT_ID: ${REFRACT_ORACLE_CONTRACT_ID:-}
-      ORACLE_RELAYER_SECRET: ${ORACLE_RELAYER_SECRET:-}
-      COINGECKO_BASE_URL: ${COINGECKO_BASE_URL:-https://api.coingecko.com/api/v3}
-      STELLAR_HORIZON_URL: ${STELLAR_HORIZON_URL:-https://horizon-testnet.stellar.org}
-      DEFILLAMA_BASE_URL: ${DEFILLAMA_BASE_URL:-https://api.llama.fi}
-      DEFILLAMA_PROTOCOL_SLUG: ${DEFILLAMA_PROTOCOL_SLUG:-aave}
-      ORACLE_HTTP_TIMEOUT_MS: ${ORACLE_HTTP_TIMEOUT_MS:-5000}
+      # API tier: serves reads and the WebSocket feed only. The payout
+      # pipeline runs in the `worker` service below.
+      PROCESS_ROLE: api
       SHUTDOWN_GRACE_PERIOD_MS: ${SHUTDOWN_GRACE_PERIOD_MS:-30000}
       ORACLE_SHUTDOWN_DRAIN_MS: ${ORACLE_SHUTDOWN_DRAIN_MS:-20000}
       ORACLE_EVIDENCE_SPOOL_DIR: /var/lib/refract/oracle-evidence
@@ -97,6 +103,32 @@ services:
       timeout: 3s
       retries: 3
       start_period: 10s
+
+  worker:
+    # Oracle polling, consensus, on-chain publishing and claim settlement.
+    # Runs exactly one replica per relayer key (sequence numbers are managed
+    # in-process). Restarts independently of the API.
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["node", "dist/worker.js"]
+    environment:
+      <<: *backend-env
+      PROCESS_ROLE: worker
+      WORKER_HEALTH_PORT: 4002
+    ports:
+      - "127.0.0.1:4002:4002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4002/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
 
 volumes:
   postgres-data:

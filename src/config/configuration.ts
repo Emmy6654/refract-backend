@@ -1,3 +1,5 @@
+export type FeeProfileName = "moderate" | "aggressive";
+
 /**
  * Typed application configuration, loaded once by Nest's ConfigModule.
  *
@@ -14,6 +16,127 @@ import { validateEnv } from "./env.schema";
 
 /** Fee-estimation profiles exposed by FeeStrategyService. */
 export type FeeProfileName = "moderate" | "aggressive";
+
+export interface AppConfig {
+  port: number;
+  frontendUrl: string;
+  database: {
+    url: string;
+    poolMax: number;
+    poolMin: number;
+    poolIdleTimeoutMs: number;
+    poolAcquireTimeoutMs: number;
+    statementTimeoutMs: number;
+    connectRetries: number;
+    connectRetryDelayMs: number;
+  };
+  redis: {
+    url: string;
+  };
+  stellar: {
+    network: string;
+    sorobanRpcUrl: string;
+    sorobanRpcUrls: string[];
+    eventStartLedger: number;
+    horizonUrl: string;
+    networkPassphrase: string;
+    poolContractId: string;
+    policyContractId: string;
+    oracleContractId: string;
+    relayerSecret: string;
+    relayerSecretId?: string;
+    relayerSecretRegion?: string;
+    validateOnChain?: boolean;
+    requireNetwork?: boolean;
+    validateTimeoutMs?: number;
+    relayer?: {
+      feeMultiplier: number;
+      feeCeiling: number;
+      idleResyncMs: number;
+      minBalance: number;
+      maxAttempts: number;
+    };
+    eventIndexer?: {
+      enabled: boolean;
+      pollIntervalMs: number;
+      lagAlertLedgers: number;
+      pageLimit: number;
+    };
+  };
+  /**
+   * Shared Soroban confirmation poller defaults (see
+   * `pollForConfirmation`). Per-call overrides let the HTTP submit path
+   * use a short deadline while settlement/oracle publish use a longer one.
+   */
+  confirmation: {
+    initialIntervalMs: number;
+    backoffMultiplier: number;
+    maxIntervalMs: number;
+    deadlineMs: number;
+    jitterRatio: number;
+    /** Longer deadline for relayer-signed settlement / oracle publishes. */
+    settlementDeadlineMs: number;
+    /** Shorter deadline so HTTP handlers don't block for a full minute. */
+    httpDeadlineMs: number;
+  };
+  oraclePublish: {
+    /**
+     * `every_poll` — publish on every scheduler tick (subject to min interval).
+     * `on_change` — publish only when the scaled fixed-point value changes
+     * (default; bounds fee spend).
+     */
+    mode: "every_poll" | "on_change";
+    /** Floor between publishes for the same coverage type (ms). */
+    minIntervalMs: number;
+  };
+  oracles: {
+    coingeckoBaseUrl: string;
+    horizonUrl: string;
+    defiLlamaBaseUrl: string;
+    defiLlamaProtocolSlug: string;
+    httpTimeoutMs: number;
+  };
+  /** Soroban inclusion-fee estimation strategy. */
+  fees: {
+    /** Hard ceiling (stroops) above which FeeCeilingExceededError is thrown. */
+    ceilingStroops: string;
+    /** TTL for the cached getFeeStats response (ms). */
+    statsTtlMs: number;
+    /** Per-profile percentile + multiplier used to derive an inclusion fee. */
+    profiles: Record<FeeProfileName, { percentile: number; multiplier: number }>;
+  };
+  /** Background Soroban event indexer settings. */
+  eventIndexer: {
+    enabled: boolean;
+    pollIntervalMs: number;
+    lagAlertLedgers: number;
+    pageLimit: number;
+  };
+  /** Ops-facing auth (bearer token + read-only community keys). */
+  ops: {
+    apiToken: string;
+    communityApiKeys: string[];
+  };
+  /** Admin-only API key (x-api-key header). */
+  adminApiKey: string;
+  /** Community-scoped API key records accepted on read-only endpoints. */
+  communityApiKeys: Array<{
+    key: string;
+    scope: "community";
+    contact: string;
+    rateLimitPerMinute: number;
+    createdAt: string;
+  }>;
+  /** Named throttling tiers consumed by ThrottlerModule. */
+  throttle: {
+    upstream: { ttl: number; limit: number };
+    chain: { ttl: number; limit: number };
+    default: { ttl: number; limit: number };
+    catalog: { ttl: number; limit: number };
+  };
+  /** Pending off-chain policies that never get submitted expire after this many ms. */
+  policyPendingTtlMs: number;
+}
 
 const NETWORK_CONFIG: Record<
   string,
@@ -53,6 +176,8 @@ const appConfigSchema = z.object({
   stellar: z.object({
     network: z.string(),
     sorobanRpcUrl: z.string().url(),
+    sorobanRpcUrls: z.array(z.string().url()),
+    eventStartLedger: z.number().int(),
     horizonUrl: z.string().url(),
     networkPassphrase: z.string(),
     poolContractId: z.string(),
@@ -159,6 +284,19 @@ const appConfigSchema = z.object({
 
 export type AppConfig = z.infer<typeof appConfigSchema>;
 
+function numberFromEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value)) throw new Error(`${name} must be a number`);
+  return value;
+}
+
+function readBool(value: string | undefined, fallback: boolean): boolean {
+  if (value === undefined) return fallback;
+  return value === "1" || value.toLowerCase() === "true" || value.toLowerCase() === "yes";
+}
+
 export default (): AppConfig => {
   const env = validateEnv(process.env);
 
@@ -186,7 +324,7 @@ export default (): AppConfig => {
   if (!selected) {
     throw new Error("expected testnet, futurenet, or mainnet");
   }
-
+  const selectedNetwork = NETWORK_CONFIG[network];
   const suffix = network.toUpperCase();
   const networkSpecificPoolId = env[`REFRACT_POOL_CONTRACT_ID_${suffix}`];
   const networkSpecificPolicyId = env[`REFRACT_POLICY_CONTRACT_ID_${suffix}`];
@@ -207,12 +345,15 @@ export default (): AppConfig => {
       connectRetries: env.DB_CONNECT_RETRIES ?? 5,
       connectRetryDelayMs: env.DB_CONNECT_RETRY_DELAY_MS ?? 1000,
     },
-    redis: {
-      url: env.REDIS_URL ?? "redis://localhost:6379",
-    },
+    redis: { url: env.REDIS_URL ?? "redis://localhost:6379" },
     stellar: {
       network,
       sorobanRpcUrl: env.SOROBAN_RPC_URL ?? selected.sorobanRpcUrl,
+      sorobanRpcUrls: (env.SOROBAN_RPC_URLS ?? selected.sorobanRpcUrl)
+        .split(",")
+        .map((url) => url.trim())
+        .filter(Boolean),
+      eventStartLedger: numberFromEnv("EVENT_START_LEDGER", 1),
       horizonUrl: env.STELLAR_HORIZON_URL ?? selected.horizonUrl,
       networkPassphrase:
         env.STELLAR_NETWORK_PASSPHRASE ?? selected.networkPassphrase,
@@ -268,33 +409,33 @@ export default (): AppConfig => {
       httpTimeoutMs: env.ORACLE_HTTP_TIMEOUT_MS ?? 5000,
     },
     fees: {
-      ceilingStroops: process.env.FEE_CEILING_STROOPS || "1000000",
-      statsTtlMs: parseInt(process.env.FEE_STATS_TTL_MS || "15000", 10),
+      statsTtlMs: numberFromEnv("FEE_STATS_TTL_MS", 15_000),
+      ceilingStroops: String(numberFromEnv("FEE_CEILING_STROOPS", 10_000_000)),
       profiles: {
         moderate: {
-          percentile: parseInt(process.env.FEE_MODERATE_PERCENTILE || "90", 10),
-          multiplier: parseFloat(process.env.FEE_MODERATE_MULTIPLIER || "1.2"),
+          percentile: numberFromEnv("FEE_MODERATE_PERCENTILE", 90),
+          multiplier: numberFromEnv("FEE_MODERATE_MULTIPLIER", 1.2),
         },
         aggressive: {
-          percentile: parseInt(process.env.FEE_AGGRESSIVE_PERCENTILE || "99", 10),
-          multiplier: parseFloat(process.env.FEE_AGGRESSIVE_MULTIPLIER || "1.5"),
+          percentile: numberFromEnv("FEE_AGGRESSIVE_PERCENTILE", 99),
+          multiplier: numberFromEnv("FEE_AGGRESSIVE_MULTIPLIER", 1.5),
         },
       },
     },
     eventIndexer: {
-      enabled: process.env.EVENT_INDEXER_ENABLED !== "false",
-      pollIntervalMs: parseInt(process.env.EVENT_INDEXER_POLL_INTERVAL_MS || "5000", 10),
-      lagAlertLedgers: parseInt(process.env.EVENT_INDEXER_LAG_ALERT_LEDGERS || "7200", 10),
-      pageLimit: parseInt(process.env.EVENT_INDEXER_PAGE_LIMIT || "200", 10),
+      enabled: readBool(env.EVENT_INDEXER_ENABLED, false),
+      pollIntervalMs: numberFromEnv("EVENT_INDEXER_POLL_INTERVAL_MS", 5_000),
+      lagAlertLedgers: numberFromEnv("EVENT_INDEXER_LAG_ALERT_LEDGERS", 100),
+      pageLimit: numberFromEnv("EVENT_INDEXER_PAGE_LIMIT", 100),
     },
     ops: {
-      apiToken: process.env.OPS_API_TOKEN || "",
-      communityApiKeys: (process.env.COMMUNITY_API_KEYS || "")
+      apiToken: env.OPS_API_TOKEN ?? "",
+      communityApiKeys: (env.COMMUNITY_API_KEYS ?? "")
         .split(",")
         .map((k) => k.trim())
         .filter(Boolean),
     },
-    adminApiKey: process.env.ADMIN_API_KEY || "",
+    adminApiKey: env.ADMIN_API_KEY ?? "",
     communityApiKeys: [],
     throttle: {
       tiers: {
@@ -333,6 +474,6 @@ export default (): AppConfig => {
         limit: parseInt(process.env.THROTTLE_CATALOG_LIMIT || "300", 10),
       },
     },
-    policyPendingTtlMs: parseInt(process.env.POLICY_PENDING_TTL_MS || "3600000", 10),
+    policyPendingTtlMs: numberFromEnv("POLICY_PENDING_TTL_MS", 3_600_000),
   };
 };

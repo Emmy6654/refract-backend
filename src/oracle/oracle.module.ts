@@ -1,8 +1,10 @@
 import { Module, Provider } from "@nestjs/common";
 import { ConfigModule, ConfigService } from "@nestjs/config";
 
+import { DbModule } from "../db/db.module";
 import { StellarModule } from "../stellar/stellar.module";
 import { OracleController } from "./oracle.controller";
+import { OracleEventRepository } from "./oracle-event.repository";
 import { OracleGateway } from "./oracle.gateway";
 import { OraclePublisherService } from "./oracle-publisher.service";
 import { OracleScheduler } from "./oracle.scheduler";
@@ -71,7 +73,7 @@ const attestationVerifierProvider: Provider = {
 };
 
 @Module({
-  imports: [ConfigModule, StellarModule],
+  imports: [ConfigModule, DbModule, StellarModule],
   controllers: [OracleController],
   providers: [
     // Clock & calendar abstraction (issue #291)
@@ -100,6 +102,7 @@ const attestationVerifierProvider: Provider = {
     OraclePublisherService,
     OracleMonitorService,
     FreshnessEnforcementService,
+    OracleEventRepository,
 
     // Gateway, scheduler & publisher
     OracleGateway,
@@ -120,6 +123,7 @@ const attestationVerifierProvider: Provider = {
     AttestationPolicyService,
     AttestationTierService,
     SourceIndependenceService,
+    OracleEventRepository,
     OracleGateway,
     OraclePublisherService,
   ],

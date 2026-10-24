@@ -175,6 +175,7 @@ export async function submitAndConfirm(
           const retryAfter = Math.max(1, Math.ceil(Math.min(backoff, Math.max(remaining, 1000)) / 1000));
           return {
             confirmed: false,
+            outcome: "not_found_yet_deadline_exceeded",
             txHash: sendResult.hash,
             error: `RPC congested (TRY_AGAIN_LATER) after ${attempt} attempt(s); retry after ${retryAfter}s`,
             httpStatus: 503,
@@ -197,6 +198,7 @@ export async function submitAndConfirm(
         logger.error(`Submission ERROR for ${sendResult.hash}: ${detail}`);
         return {
           confirmed: false,
+          outcome: "submission_rejected",
           txHash: sendResult.hash,
           error: detail,
           resultCode: code,
@@ -207,6 +209,7 @@ export async function submitAndConfirm(
       default:
         return {
           confirmed: false,
+          outcome: "unexpected_status",
           txHash: lastHash,
           error: `Unexpected sendTransaction status: ${sendResult.status}`,
           httpStatus: 502,

@@ -8,12 +8,13 @@ import {
   Max,
   Matches,
   Length,
+  MaxLength,
   IsObject,
   Validate,
   ValidateIf,
-  ValidationArguments,
   ValidatorConstraint,
   ValidatorConstraintInterface,
+  ValidationArguments,
 } from "class-validator";
 import { IsStellarPublicKey } from "../../common/validators/stellar-address.validator";
 
@@ -59,8 +60,10 @@ export class BuyPolicyDto {
   @Max(4)
   coverageType!: number;
 
+  /** Coverage in 1e7 USDC base units, represented as a decimal string. */
   @IsString()
   @Matches(/^\d+$/)
+  @MaxLength(38)
   coverageAmount!: string;
 
   @IsInt()
@@ -82,6 +85,8 @@ export class BuyPolicyDto {
  */
 export class PreflightPolicyDto {
   @IsString()
+  @IsNotEmpty()
+  @IsStellarPublicKey()
   @Length(56, 56)
   holder!: string;
 
@@ -93,6 +98,7 @@ export class PreflightPolicyDto {
   /** USDC amount in 1e7 base units, passed as a decimal string to avoid precision loss. */
   @IsString()
   @Matches(/^\d+$/)
+  @MaxLength(38)
   coverageAmount!: string;
 
   @IsInt()
@@ -100,8 +106,6 @@ export class PreflightPolicyDto {
   @Max(365)
   durationDays!: number;
 
-  @IsOptional()
-  @IsObject()
   @ValidateIf((obj) => obj.triggerParams !== undefined)
   @Validate(TriggerParamsConstraint)
   triggerParams?: Record<string, unknown>;

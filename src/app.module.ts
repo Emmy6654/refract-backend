@@ -29,6 +29,8 @@ import { AuthModule } from './auth/auth.module';
 import { ApiKeyGuard } from './auth/api-key.guard';
 import { SecurityReportsModule } from './security-reports/security-reports.module';
 import { DigestModule } from './digest/digest.module';
+import { ReadingBusModule } from './oracle/reading-bus.module';
+import { OracleFeedModule } from './oracle/oracle-feed.module';
 import { OracleIngestionModule } from './oracle/sources/oracle-ingestion.module';
 import { OracleRegionsModule } from './oracle/regions/oracle-regions.module';
 import { ReevaluationModule } from './claim/reevaluation/reevaluation.module';
@@ -39,6 +41,8 @@ import { isOracleSandboxEnabled } from './oracle/sandbox/oracle-sandbox.config';
 import { FeedsModule } from './feeds/feeds.module';
 import { OperatorsModule } from './routes/operators';
 import { StakingModule } from './routes/staking';
+import { EventsModule } from './events/events.module';
+import { MetricsModule } from './metrics/metrics.module';
 
 /**
  * Sandbox mode lets the full API run with zero external dependencies
@@ -51,23 +55,19 @@ export const isSandboxMode = (): boolean =>
 
 @Module({
   imports: [
-    ConfigModule.forRoot({
-      isGlobal: true,
-      load: [configuration],
+    ConfigModule.forRoot({ isGlobal: true, load: [configuration] }),
+    ThrottlerModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (config: ConfigService<AppConfig, true>) => ({
+        throttlers: [
+          { name: "upstream", ...config.get("throttle.upstream", { infer: true }) },
+          { name: "chain", ...config.get("throttle.chain", { infer: true }) },
+          { name: "default", ...config.get("throttle.default", { infer: true }) },
+          { name: "catalog", ...config.get("throttle.catalog", { infer: true }) },
+        ],
+      }),
     }),
     ScheduleModule.forRoot(),
-    // In sandbox mode we skip the real Postgres connection entirely so
-    // `npm run dev` works right after `npm install` with no other setup.
-    ...(isSandboxMode()
-      ? []
-      : [
-          TypeOrmModule.forRootAsync({
-            imports: [DatabaseModule],
-            inject: [DatabaseModule],
-            useFactory: (databaseModule: DatabaseModule) =>
-              databaseModule.getTypeOrmConfig(),
-          }),
-        ]),
     DatabaseModule,
     IdempotencyModule,
     // CacheModule is @Global — imported once here, available everywhere.
@@ -77,6 +77,8 @@ export const isSandboxMode = (): boolean =>
     StellarModule,
     DbModule,
     HealthModule,
+    MetricsModule,
+    EventsModule,
     QuoteModule,
     PolicyModule,
     PoolModule,
@@ -87,6 +89,9 @@ export const isSandboxMode = (): boolean =>
     // Global: per-adapter endpoint lists with health-based failover.
     ProviderEndpointsModule,
     OracleModule,
+    // Read side of the oracle: relays readings the worker publishes.
+    ReadingBusModule,
+    OracleFeedModule,
     OracleBootstrapModule,
     OracleAdminModule,
     ConsensusModule,

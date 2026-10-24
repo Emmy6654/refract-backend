@@ -10,7 +10,9 @@ export type ConfirmationOutcome =
   | "success"
   | "failed_on_chain"
   | "not_found_yet_deadline_exceeded"
-  | "aborted";
+  | "aborted"
+  | "submission_rejected"
+  | "unexpected_status";
 
 export interface ConfirmationResult {
   /** Convenience mirror of `outcome === "success"`. */

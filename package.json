@@ -1,9 +1,9 @@
 {
-  "name": "refract",
+  "name": "refract-protocol-backend",
   "version": "0.1.0",
-  "private": true,
   "description": "Refract Protocol backend \u2014 oracle monitoring, claim processing, premium quoting",
   "main": "dist/main.js",
+  "private": true,
   "workspaces": [
     "refract-backend",
     "refract-frontend",
@@ -11,13 +11,20 @@
   ],
   "scripts": {
     "build": "nest build",
-    "start": "node dist/main.js",
+    "dev": "nodemon --exec ts-node src/main.ts",
+    "start": "nest start",
     "start:dev": "nest start --watch",
     "start:prod": "node dist/main",
-    "dev": "nodemon --exec ts-node src/main.ts",
+    "start:worker": "nest start --entryFile worker",
+    "start:worker:dev": "nest start --watch --entryFile worker",
+    "start:worker:prod": "node dist/worker",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint \"src/**/*.ts\"",
     "test": "npm run test:unit && npm run test:contracts",
+    "test:watch": "jest --watch",
+    "test:cov": "jest --coverage",
+    "test:property": "jest --testRegex '.*\\.property\\.spec\\.ts$'",
+    "test:integration": "jest --config test/integration/jest.integration.config.ts --runInBand",
     "test:unit": "npm run test --workspaces --if-present",
     "test:contracts": "node test/contracts/verify.js",
     "test:contracts:update": "node test/contracts/verify.js --update",
@@ -28,14 +35,11 @@
     "migrate:down": "node-pg-migrate down --migrations-dir migrations --config-file database.json",
     "migrate:create": "node-pg-migrate create --migrations-dir migrations --config-file database.json",
     "migrate:status": "node-pg-migrate status --migrations-dir migrations --config-file database.json",
-    "test:watch": "jest --watch",
-    "test:cov": "jest --coverage",
     "soroban:up": "docker compose -f test/soroban/docker-compose.yml up -d --wait",
     "soroban:down": "docker compose -f test/soroban/docker-compose.yml down -v",
     "soroban:bootstrap": "ts-node scripts/soroban-bootstrap.ts",
     "test:soroban": "jest --config test/soroban/jest.soroban.config.js",
-    "regenerate:xdr-fixtures": "ts-node scripts/regenerate-xdr-fixtures.ts",
-    "test:integration": "jest --config test/integration/jest.integration.config.ts --runInBand"
+    "regenerate:xdr-fixtures": "ts-node scripts/regenerate-xdr-fixtures.ts"
   },
   "engines": {
     "node": ">=18"
@@ -106,16 +110,28 @@
     "testMatch": [
       "**/src/**/*.spec.ts"
     ],
-    "moduleFileExtensions": ["js", "json", "ts"],
+    "moduleFileExtensions": [
+      "js",
+      "json",
+      "ts"
+    ],
     "transform": {
-      "^.+\\.(t|j)s$": "ts-jest",
       "^.+\\.ts$": "ts-jest",
-      "^.+\\.js$": "babel-jest"
+      "^.+\\.js$": [
+        "babel-jest",
+        {
+          "plugins": [
+            "@babel/plugin-transform-modules-commonjs"
+          ]
+        }
+      ]
     },
     "transformIgnorePatterns": [
-      "/node_modules/(?!(@stellar|@noble|@scure|stellar-base|bignumber.js|crc|tweetnacl|base32.js|uint8array-extras|@adraffy|@noble/curves)/)"
+      "^(?!.*/node_modules/(@noble|uint8array-extras)/).*/node_modules/"
     ],
-    "collectCoverageFrom": ["**/*.(t|j)s"],
+    "collectCoverageFrom": [
+      "**/*.(t|j)s"
+    ],
     "coverageDirectory": "../coverage"
   }
 }

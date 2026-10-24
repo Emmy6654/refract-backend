@@ -13,6 +13,8 @@ export function testStellarConfig(
   return {
     network: "testnet",
     sorobanRpcUrl: "https://soroban-testnet.stellar.org",
+    sorobanRpcUrls: ["https://soroban-testnet.stellar.org"],
+    eventStartLedger: 1,
     networkPassphrase: "Test SDF Network ; September 2015",
     poolContractId: "",
     policyContractId: "",
