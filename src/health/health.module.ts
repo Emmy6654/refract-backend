@@ -3,9 +3,10 @@ import { CacheModule } from "../cache/cache.module";
 import { DbModule } from "../db/db.module";
 import { HealthController } from "./health.controller";
 import { HealthService } from "./health.service";
+import { OracleTrustModule } from "../oracle/oracle-trust.module";
 
 @Module({
-  imports: [CacheModule, DbModule],
+  imports: [CacheModule, DbModule, OracleTrustModule],
   controllers: [HealthController],
   providers: [HealthService],
   exports: [HealthService],

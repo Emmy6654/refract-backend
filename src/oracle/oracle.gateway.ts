@@ -90,48 +90,39 @@ export class OracleGateway
    * come from the worker via the ReadingBus (see OracleFeedRelay); this
    * process never polls upstreams itself.
    */
-  broadcastAlert(alert: OracleReading): void {
+  broadcastAlert(reading: OracleReading): void {
     if (!this.server?.clients) {
       return;
     }
-    const payload = JSON.stringify({ ...alert, timestamp: Date.now() });
+    const message = JSON.stringify({
+      type: 'oracle_alert',
+      data: reading,
+      timestamp: new Date().toISOString(),
+    });
     let sent = 0;
     for (const client of this.server.clients) {
-      if (client.readyState !== WebSocket.OPEN) continue;
+      if (client.readyState !== WebSocket.OPEN) {
+        continue;
+      }
       // send() can throw for a socket that is mid-close; one bad client must
       // not stop the broadcast to everyone else.
       try {
-        client.send(payload);
+        client.send(message, (error) => {
+          if (error) this.logger.warn(`Oracle WebSocket send failed: ${error.message}`);
+        });
         sent++;
-      } catch (err) {
+      } catch (error) {
         this.logger.warn(
-          `Failed to send oracle alert to a client: ${err instanceof Error ? err.message : String(err)}`,
+          `Failed to send oracle alert: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
     }
-    this.logger.debug(`Broadcast ${alert.coverageType} alert to ${sent} client(s)`);
+    this.logger.debug(`Broadcast ${reading.coverageType} alert to ${sent} client(s)`);
   }
 
   handleDisconnect(client: WebSocket): void {
     this.clients.delete(client);
     this.logger.log('Oracle WebSocket client disconnected');
-  }
-
-  broadcastAlert(reading: OracleReading): void {
-    if (!this.server) return;
-    const payload = JSON.stringify(reading);
-    for (const client of this.server.clients) {
-      if (client.readyState !== WebSocket.OPEN) continue;
-      try {
-        client.send(payload, (error) => {
-          if (error) this.logger.warn(`Oracle WebSocket send failed: ${error.message}`);
-        });
-      } catch (error) {
-        this.logger.warn(
-          `Oracle WebSocket send failed: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    }
   }
 
   /** Authenticated (ops) clients present `?token=` equal to OPS_WS_TOKEN. */

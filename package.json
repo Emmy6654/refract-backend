@@ -1,7 +1,7 @@
 {
   "name": "refract-protocol-backend",
   "version": "0.1.0",
-  "description": "Refract Protocol backend \u2014 oracle monitoring, claim processing, premium quoting",
+  "description": "Refract Protocol backend — oracle monitoring, claim processing, premium quoting",
   "main": "dist/main.js",
   "private": true,
   "workspaces": [
@@ -127,7 +127,7 @@
       ]
     },
     "transformIgnorePatterns": [
-      "^(?!.*/node_modules/(@noble|uint8array-extras)/).*/node_modules/"
+      "/node_modules/(?!(?:@stellar/stellar-sdk|@noble/.*|@scure/.*|uint8array-extras|hexoid|bignumber.js|@stellar|@noble|@scure|stellar-base|crc|tweetnacl|base32.js|@adraffy|@noble/curves))"
     ],
     "collectCoverageFrom": [
       "**/*.(t|j)s"

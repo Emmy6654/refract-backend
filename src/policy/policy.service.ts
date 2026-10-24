@@ -1,5 +1,5 @@
+import { BadRequestException, Injectable, Optional } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
-import { BadRequestException, Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
   Account,
@@ -18,6 +18,7 @@ const uuidv4 = randomUUID;
 import { AppConfig } from "../config/configuration";
 import { MetricsService } from "../metrics/metrics.service";
 import { BuyPolicyDto } from "./dto/buy-policy.dto";
+import { OracleTrustService } from "../oracle/oracle-trust.service";
 
 const FLIGHT_DELAY_COVERAGE_TYPE = 4;
 const COVERAGE_TYPE_VARIANTS = [
@@ -42,6 +43,9 @@ export interface CoverageTypeCatalogEntry {
   maxCoverage: number;
   trigger: string;
   icon: string;
+  available: boolean;
+  requiredFeeds: string[];
+  unavailableReason?: string;
 }
 
 export interface StoredPolicy {
@@ -81,6 +85,8 @@ const COVERAGE_TYPES: CoverageTypeCatalogEntry[] = [
     maxCoverage: 100_000,
     trigger: "USDC price < $0.95 for 15+ minutes",
     icon: "🪙",
+    available: true,
+    requiredFeeds: [],
   },
   {
     id: 1,
@@ -92,6 +98,8 @@ const COVERAGE_TYPES: CoverageTypeCatalogEntry[] = [
     maxCoverage: 50_000,
     trigger: "Market index 24h return < -30%",
     icon: "📉",
+    available: true,
+    requiredFeeds: [],
   },
   {
     id: 2,
@@ -103,6 +111,8 @@ const COVERAGE_TYPES: CoverageTypeCatalogEntry[] = [
     maxCoverage: 200_000,
     trigger: "Collateral ratio drops below maintenance threshold",
     icon: "🛡️",
+    available: true,
+    requiredFeeds: [],
   },
   {
     id: 3,
@@ -114,6 +124,8 @@ const COVERAGE_TYPES: CoverageTypeCatalogEntry[] = [
     maxCoverage: 500_000,
     trigger: "Covered protocol TVL drops >50% in <1 hour",
     icon: "🔐",
+    available: true,
+    requiredFeeds: [],
   },
   {
     id: 4,
@@ -125,6 +137,8 @@ const COVERAGE_TYPES: CoverageTypeCatalogEntry[] = [
     maxCoverage: 2_000,
     trigger: "Flight delayed > 120 minutes per AviationStack data",
     icon: "✈️",
+    available: true,
+    requiredFeeds: [],
   },
 ];
 
@@ -142,7 +156,8 @@ export class PolicyService {
   constructor(
     private readonly configService: ConfigService<AppConfig, true>,
     private readonly metricsService: MetricsService,
-    private readonly parameters?: ProtocolParametersReader
+    private readonly parameters?: ProtocolParametersReader,
+    @Optional() private readonly oracleTrust?: OracleTrustService,
   ) {
     const stellar = this.configService.get("stellar", { infer: true });
     this.server = new rpc.Server(stellar.sorobanRpcUrl);
@@ -263,7 +278,15 @@ export class PolicyService {
   }
 
   listTypes(): CoverageTypeCatalogEntry[] {
-    return COVERAGE_TYPES;
+    return COVERAGE_TYPES.map((entry) => {
+      const availability = this.oracleTrust?.getCoverageAvailability(COVERAGE_TYPE_VARIANTS[entry.id]);
+      return {
+        ...entry,
+        available: availability?.available ?? true,
+        requiredFeeds: availability?.requiredFeeds ?? [],
+        unavailableReason: availability?.reason,
+      };
+    });
   }
 
   findByHolder(address: string): StoredPolicy[] {
@@ -352,6 +375,17 @@ export class PolicyService {
     if (!catalogEntry) {
       throw new BadRequestException({
         error: `coverageType must be between 0 and ${COVERAGE_TYPES.length - 1}`,
+      });
+    }
+    const coverageAvailability = this.oracleTrust?.getCoverageAvailability(
+      COVERAGE_TYPE_VARIANTS[coverageType],
+    );
+    if (coverageAvailability && !coverageAvailability.available) {
+      throw new BadRequestException({
+        error: `${catalogEntry.name} coverage is unavailable`,
+        requiredFeeds: coverageAvailability.requiredFeeds,
+        unavailableFeeds: coverageAvailability.unavailableFeeds,
+        reason: coverageAvailability.reason,
       });
     }
 

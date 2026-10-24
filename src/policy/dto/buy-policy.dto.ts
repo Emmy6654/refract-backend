@@ -42,7 +42,7 @@ class TriggerParamsConstraint implements ValidatorConstraintInterface {
 
 export class BuyPolicyDto {
   @IsString()
-  @IsNotEmpty()
+  @Length(56, 56)
   @IsStellarPublicKey()
   holder!: string;
 
@@ -83,30 +83,4 @@ export class BuyPolicyDto {
  * condition (capacity, utilization, coverage bounds, duration, premium balance)
  * without building or returning an XDR.
  */
-export class PreflightPolicyDto {
-  @IsString()
-  @IsNotEmpty()
-  @IsStellarPublicKey()
-  @Length(56, 56)
-  holder!: string;
-
-  @IsInt()
-  @Min(0)
-  @Max(4)
-  coverageType!: number;
-
-  /** USDC amount in 1e7 base units, passed as a decimal string to avoid precision loss. */
-  @IsString()
-  @Matches(/^\d+$/)
-  @MaxLength(38)
-  coverageAmount!: string;
-
-  @IsInt()
-  @Min(1)
-  @Max(365)
-  durationDays!: number;
-
-  @ValidateIf((obj) => obj.triggerParams !== undefined)
-  @Validate(TriggerParamsConstraint)
-  triggerParams?: Record<string, unknown>;
-}
+export class PreflightPolicyDto extends BuyPolicyDto {}

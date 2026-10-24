@@ -95,6 +95,7 @@ export interface AppConfig {
     defiLlamaBaseUrl: string;
     defiLlamaProtocolSlug: string;
     httpTimeoutMs: number;
+    feedLatencyBudgetsMs?: Record<string, number>;
   };
   /** Soroban inclusion-fee estimation strategy. */
   fees: {
@@ -111,6 +112,7 @@ export interface AppConfig {
     pollIntervalMs: number;
     lagAlertLedgers: number;
     pageLimit: number;
+    contractId: string;
   };
   /** Ops-facing auth (bearer token + read-only community keys). */
   ops: {
@@ -134,6 +136,7 @@ export interface AppConfig {
     default: { ttl: number; limit: number };
     catalog: { ttl: number; limit: number };
   };
+  oracleTrustMode: "strict" | "quorum" | "development";
   /** Pending off-chain policies that never get submitted expire after this many ms. */
   policyPendingTtlMs: number;
 }
@@ -348,21 +351,17 @@ export default (): AppConfig => {
     redis: { url: env.REDIS_URL ?? "redis://localhost:6379" },
     stellar: {
       network,
-      sorobanRpcUrl: env.SOROBAN_RPC_URL ?? selected.sorobanRpcUrl,
-      sorobanRpcUrls: (env.SOROBAN_RPC_URLS ?? selected.sorobanRpcUrl)
+      sorobanRpcUrl: env.SOROBAN_RPC_URL || selectedNetwork.sorobanRpcUrl,
+      sorobanRpcUrls: (env.SOROBAN_RPC_URLS ?? env.SOROBAN_RPC_URL ?? selectedNetwork.sorobanRpcUrl)
         .split(",")
         .map((url) => url.trim())
         .filter(Boolean),
       eventStartLedger: numberFromEnv("EVENT_START_LEDGER", 1),
-      horizonUrl: env.STELLAR_HORIZON_URL ?? selected.horizonUrl,
-      networkPassphrase:
-        env.STELLAR_NETWORK_PASSPHRASE ?? selected.networkPassphrase,
-      poolContractId:
-        networkSpecificPoolId ?? env.REFRACT_POOL_CONTRACT_ID ?? "",
-      policyContractId:
-        networkSpecificPolicyId ?? env.REFRACT_POLICY_CONTRACT_ID ?? "",
-      oracleContractId:
-        networkSpecificOracleId ?? env.REFRACT_ORACLE_CONTRACT_ID ?? "",
+      horizonUrl: env.STELLAR_HORIZON_URL || selectedNetwork.horizonUrl,
+      networkPassphrase: env.STELLAR_NETWORK_PASSPHRASE || selectedNetwork.networkPassphrase,
+      poolContractId: networkSpecificPoolId ?? env.REFRACT_POOL_CONTRACT_ID ?? "",
+      policyContractId: networkSpecificPolicyId ?? env.REFRACT_POLICY_CONTRACT_ID ?? "",
+      oracleContractId: networkSpecificOracleId ?? env.REFRACT_ORACLE_CONTRACT_ID ?? "",
       relayerSecret: env.ORACLE_RELAYER_SECRET ?? "",
       relayerSecretId: env.ORACLE_RELAYER_SECRET_ID ?? "",
       relayerSecretRegion: env.ORACLE_RELAYER_SECRET_REGION ?? "us-east-1",
@@ -397,20 +396,20 @@ export default (): AppConfig => {
       minIntervalMs: env.ORACLE_PUBLISH_MIN_INTERVAL_MS ?? 0,
     },
     oracles: {
-      coingeckoBaseUrl:
-        env.COINGECKO_BASE_URL ?? "https://api.coingecko.com/api/v3",
-      horizonUrl: env.STELLAR_HORIZON_URL ?? selected.horizonUrl,
-      defiLlamaBaseUrl: env.DEFILLAMA_BASE_URL ?? "https://api.llama.fi",
+      coingeckoBaseUrl: env.COINGECKO_BASE_URL || "https://api.coingecko.com/api/v3",
+      horizonUrl: env.STELLAR_HORIZON_URL || selectedNetwork.horizonUrl,
+      defiLlamaBaseUrl: env.DEFILLAMA_BASE_URL || "https://api.llama.fi",
       // Placeholder "covered protocol" for the SmartContractRisk TVL-drop
       // check until Refract defines a real list of covered Soroban
       // protocols. Defaults to a large, consistently-tracked protocol so
       // the drop-detection logic has real data to run against.
-      defiLlamaProtocolSlug: env.DEFILLAMA_PROTOCOL_SLUG ?? "aave",
-      httpTimeoutMs: env.ORACLE_HTTP_TIMEOUT_MS ?? 5000,
+      defiLlamaProtocolSlug: env.DEFILLAMA_PROTOCOL_SLUG || "aave",
+      httpTimeoutMs: numberFromEnv("ORACLE_HTTP_TIMEOUT_MS", 5_000),
+      feedLatencyBudgetsMs: parseFeedBudgets(env.ORACLE_FEED_LATENCY_BUDGETS_MS),
     },
     fees: {
       statsTtlMs: numberFromEnv("FEE_STATS_TTL_MS", 15_000),
-      ceilingStroops: String(numberFromEnv("FEE_CEILING_STROOPS", 10_000_000)),
+      ceilingStroops: env.FEE_CEILING_STROOPS || String(numberFromEnv("FEE_CEILING_STROOPS", 10_000_000)),
       profiles: {
         moderate: {
           percentile: numberFromEnv("FEE_MODERATE_PERCENTILE", 90),
@@ -427,13 +426,11 @@ export default (): AppConfig => {
       pollIntervalMs: numberFromEnv("EVENT_INDEXER_POLL_INTERVAL_MS", 5_000),
       lagAlertLedgers: numberFromEnv("EVENT_INDEXER_LAG_ALERT_LEDGERS", 100),
       pageLimit: numberFromEnv("EVENT_INDEXER_PAGE_LIMIT", 100),
+      contractId: env.REFRACT_POOL_CONTRACT_ID || "",
     },
     ops: {
-      apiToken: env.OPS_API_TOKEN ?? "",
-      communityApiKeys: (env.COMMUNITY_API_KEYS ?? "")
-        .split(",")
-        .map((k) => k.trim())
-        .filter(Boolean),
+      apiToken: env.OPS_API_TOKEN || "",
+      communityApiKeys: parseCsv(env.COMMUNITY_API_KEYS),
     },
     adminApiKey: env.ADMIN_API_KEY ?? "",
     communityApiKeys: [],
@@ -474,6 +471,47 @@ export default (): AppConfig => {
         limit: parseInt(process.env.THROTTLE_CATALOG_LIMIT || "300", 10),
       },
     },
+    oracleTrustMode: parseTrustMode(env.ORACLE_TRUST_MODE),
     policyPendingTtlMs: numberFromEnv("POLICY_PENDING_TTL_MS", 3_600_000),
   };
 };
+
+export function isSandboxMode(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = (env.SANDBOX_MODE ?? "").trim().toLowerCase();
+  return raw === "true" || raw === "1" || raw === "yes" || raw === "on";
+}
+
+export function assertSandboxSafety(env: NodeJS.ProcessEnv = process.env): void {
+  if (isSandboxMode(env) && (env.NODE_ENV ?? "").trim().toLowerCase() === "production") {
+    throw new Error("SANDBOX_MODE is not allowed when NODE_ENV=production");
+  }
+}
+
+function parseCsv(value?: string): string[] {
+  return (value ?? "").split(",").map((entry) => entry.trim()).filter(Boolean);
+}
+
+function parseFeedBudgets(value?: string): Record<string, number> | undefined {
+  if (!value) return undefined;
+  let result: unknown;
+  try {
+    result = JSON.parse(value);
+  } catch {
+    throw new Error("ORACLE_FEED_LATENCY_BUDGETS_MS must be valid JSON");
+  }
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    throw new Error("ORACLE_FEED_LATENCY_BUDGETS_MS must be a JSON object");
+  }
+  for (const [feed, budget] of Object.entries(result)) {
+    if (!Number.isInteger(budget) || Number(budget) <= 0) {
+      throw new Error(`Latency budget for ${feed} must be a positive integer`);
+    }
+  }
+  return result as Record<string, number>;
+}
+
+function parseTrustMode(value?: string): AppConfig["oracleTrustMode"] {
+  if (value === undefined || value === "") return "strict";
+  if (value === "strict" || value === "quorum" || value === "development") return value;
+  throw new Error("ORACLE_TRUST_MODE must be strict, quorum, or development");
+}

@@ -11,8 +11,11 @@ export interface OracleReading {
   threshold: number;
   severity: Severity;
   message: string;
+  feedId?: string;
   source?: string;
   timestamp?: number;
+  deadlineAt?: number;
+  fetchDurationMs?: number;
   /**
    * True when this reading came from the fail-safe fallback (upstream outage).
    * OraclePublisherService must never publish degraded readings on-chain.

@@ -56,6 +56,26 @@ export class MetricsService implements RelayerMetricsSink {
     buckets: [0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30],
     registers: [this.registry],
   });
+  private readonly oracleStageDuration = new Histogram<"feed" | "stage">({
+    name: "refract_oracle_stage_duration_seconds",
+    help: "Oracle feed processing duration by feed and pipeline stage.",
+    labelNames: ["feed", "stage"],
+    buckets: [0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60],
+    registers: [this.registry],
+  });
+  private readonly oracleDeadlineBreaches = new Counter<"feed" | "stage">({
+    name: "refract_oracle_deadline_breaches_total",
+    help: "Oracle feed publication deadlines breached, labeled by feed and stage.",
+    labelNames: ["feed", "stage"],
+    registers: [this.registry],
+  });
+  private readonly oracleDeadlineOverrun = new Histogram<"feed" | "stage">({
+    name: "refract_oracle_deadline_overrun_seconds",
+    help: "Time by which oracle feed processing exceeded its publication deadline.",
+    labelNames: ["feed", "stage"],
+    buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30],
+    registers: [this.registry],
+  });
 
   private readonly relayerBalance = new Gauge({
     name: "refract_relayer_balance_stroops",
@@ -129,6 +149,16 @@ export class MetricsService implements RelayerMetricsSink {
   recordOracleCheck(coverageType: string, outcome: OracleOutcome, durationSeconds: number): void {
     this.oracleChecks.labels({ coverage_type: coverageType, outcome }).inc();
     this.oracleCheckDuration.labels({ coverage_type: coverageType }).observe(durationSeconds);
+  }
+
+  recordOracleStage(feed: string, stage: string, durationSeconds: number): void {
+    this.oracleStageDuration.labels({ feed, stage }).observe(durationSeconds);
+  }
+
+  recordOracleDeadlineBreach(feed: string, stage: string, overrunSeconds: number): void {
+    const labels = { feed, stage };
+    this.oracleDeadlineBreaches.labels(labels).inc();
+    this.oracleDeadlineOverrun.labels(labels).observe(Math.max(0, overrunSeconds));
   }
 
   recordRelayerBalance(a: BalanceAssessment, spend: FeeSpendSummary): void {
