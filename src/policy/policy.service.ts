@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { BadRequestException, Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import {
@@ -12,18 +13,13 @@ import {
   scValToNative,
   xdr,
 } from "@stellar/stellar-sdk";
-import { v4 as uuidv4 } from "uuid";
+
+const uuidv4 = randomUUID;
 import { AppConfig } from "../config/configuration";
 import { MetricsService } from "../metrics/metrics.service";
 import { BuyPolicyDto } from "./dto/buy-policy.dto";
 
 const FLIGHT_DELAY_COVERAGE_TYPE = 4;
-
-/**
- * Mirrors refract-contracts/pool/src/lib.rs's `CoverageType` enum, in
- * declaration order — buy-policy.dto.ts's `coverageType` is validated as
- * 0-4 against exactly this ordering.
- */
 const COVERAGE_TYPE_VARIANTS = [
   "StablecoinDepeg",
   "MarketCrash",
@@ -31,15 +27,10 @@ const COVERAGE_TYPE_VARIANTS = [
   "SmartContractRisk",
   "FlightDelay",
 ] as const;
-
-/**
- * trigger_threshold per coverage type, in the units process_claim() compares
- * against (see lib.rs): bps for StablecoinDepeg/MarketCrash, minutes for
- * FlightDelay. LiquidationShield/SmartContractRisk trigger on
- * `oracle_value > 0` and never read trigger_threshold, so its value there is
- * inert — kept non-zero only for consistency with the other entries.
- */
 const TRIGGER_THRESHOLDS = [500, 3000, 500, 500, 120];
+const RISK_MULTIPLIERS = [1.0, 1.5, 2.0, 3.0, 0.8];
+export const BASE_RATE_BPS_PARAM_KEY = "base_rate_bps";
+const DEFAULT_BASE_RATE_BPS = 300;
 
 export interface CoverageTypeCatalogEntry {
   id: number;
@@ -67,23 +58,6 @@ export interface StoredPolicy {
   triggerParams?: Record<string, unknown>;
 }
 
-const RISK_MULTIPLIERS = [1.0, 1.5, 2.0, 3.0, 0.8];
-
-/**
- * Registry key for the governance-managed base premium rate (bps). The
- * value is read from the protocol-parameters registry at runtime so
- * governance can adjust it without a code deploy; the constant below is
- * only the fallback used when the registry has no override yet.
- */
-export const BASE_RATE_BPS_PARAM_KEY = "base_rate_bps";
-const DEFAULT_BASE_RATE_BPS = 300; // 3% annual
-
-/**
- * Minimal read surface of the protocol-parameters registry. The concrete
- * database-backed implementation lives in src/parameters/ and is injected
- * here; keeping this structural type local avoids a hard import cycle
- * while still letting the service read governance-managed values.
- */
 export interface ProtocolParametersReader {
   getNumber(key: string, fallback: number): number;
 }
@@ -156,10 +130,7 @@ const COVERAGE_TYPES: CoverageTypeCatalogEntry[] = [
 
 @Injectable()
 export class PolicyService {
-  // In-memory store — replaced by the Postgres-backed repository in a
-  // follow-up PR that wires the app onto src/db/schema.sql.
   private readonly policies = new Map<string, StoredPolicy>();
-
   private readonly server: rpc.Server;
   private readonly networkPassphrase: string;
   private readonly poolContractId: string;
@@ -175,30 +146,10 @@ export class PolicyService {
     this.poolContractId = stellar.poolContractId;
   }
 
-  /**
-   * Resolves the governance-managed base premium rate (bps) from the
-   * protocol-parameters registry, falling back to the historical constant
-   * when the registry isn't wired or has no override. Read at call time so
-   * a governance change is reflected in new quotes immediately, while
-   * already-issued policies keep the rate snapshotted at issuance.
-   */
   private baseRateBps(): number {
     return this.parameters?.getNumber(BASE_RATE_BPS_PARAM_KEY, DEFAULT_BASE_RATE_BPS) ?? DEFAULT_BASE_RATE_BPS;
   }
 
-  /**
-   * buy_policy(holder, params: PolicyParams) is called against
-   * RefractPool, not a separate policy contract — the pool takes the
-   * premium and mirrors the new policy into RefractPolicyRegistry itself
-   * (see pool/src/lib.rs). PolicyParams is a `#[contracttype]` struct,
-   * which soroban-sdk's derive serializes as a Map<Symbol, Val> with
-   * entries sorted by field name (confirmed against
-   * soroban-sdk-macros::derive_struct's `sorted_by_key` on the field
-   * ident) — hence the alphabetical key order below. CoverageType is a
-   * unit-variant enum, which serializes as a one-element vec holding the
-   * variant name as a Symbol (confirmed against
-   * soroban-sdk-macros::derive_enum's map_empty_variant).
-   */
   private buildPolicyParamsScVal(
     coverageType: number,
     coverageAmount: bigint,
@@ -225,12 +176,6 @@ export class PolicyService {
     ]);
   }
 
-  /**
-   * Builds an unsigned, simulation-prepared buy_policy() invocation for
-   * `holder` to sign in their own wallet — buy_policy() calls
-   * `require_auth()` on the holder, so the server can never sign this
-   * itself.
-   */
   private async buildUnsignedBuyInvoke(holder: string, paramsScVal: xdr.ScVal): Promise<string> {
     if (!this.poolContractId) {
       throw new BadRequestException({ error: "Pool contract not configured (missing REFRACT_POOL_CONTRACT_ID)" });
@@ -260,21 +205,6 @@ export class PolicyService {
     }
   }
 
-  /**
-   * Reads RefractPool.pool_config()'s min_coverage/max_coverage via
-   * simulation — no signature or submission, this never changes state.
-   * Returns null if the pool contract isn't configured or hasn't been
-   * initialized on-chain yet (pool_config() itself returns None then).
-   *
-   * The pool enforces ONE global min/max coverage across every coverage
-   * type (see _check_coverage_capacity in pool/src/lib.rs) — there's no
-   * per-type bound on-chain, unlike COVERAGE_TYPES' maxCoverage below,
-   * which is this catalog's own (stricter, per-type) product policy. Both
-   * checks apply: the catalog caps what buy() will offer per type, this
-   * catches the case where that per-type cap is still above whatever the
-   * pool is actually configured to allow right now — e.g. after an admin
-   * calls set_pool_config() — which the catalog alone can't see.
-   */
   async onChainCoverageBounds(): Promise<{ minCoverage: bigint; maxCoverage: bigint } | null> {
     if (!this.poolContractId) {
       return null;
@@ -323,19 +253,88 @@ export class PolicyService {
     return this.policies.get(id);
   }
 
-  /** Active, unexpired policies — the pool ClaimService scans for triggers. */
   listActive(): StoredPolicy[] {
     const now = Math.floor(Date.now() / 1000);
     return [...this.policies.values()].filter((p) => p.isActive && p.expiresAt > now);
   }
 
-  /** Marks a policy inactive after a claim has been paid out. */
   deactivate(id: string): void {
     const policy = this.policies.get(id);
     if (policy) {
       policy.isActive = false;
       this.policies.set(id, policy);
     }
+  }
+
+  async simulateBuy(dto: BuyPolicyDto): Promise<{ policy: StoredPolicy; txXdr: string; message: string }> {
+    const { holder, coverageType, coverageAmount, durationDays, triggerParams } = dto;
+
+    const catalogEntry = COVERAGE_TYPES[coverageType];
+    if (!catalogEntry) {
+      throw new BadRequestException({
+        error: `coverageType must be between 0 and ${COVERAGE_TYPES.length - 1}`,
+      });
+    }
+
+    if (coverageType === FLIGHT_DELAY_COVERAGE_TYPE && typeof triggerParams?.flightNumber !== "string") {
+      throw new BadRequestException({
+        error: "Flight Delay coverage requires triggerParams.flightNumber",
+      });
+    }
+
+    const coverage = BigInt(coverageAmount);
+    if (coverage <= 0n) {
+      throw new BadRequestException({ error: "coverageAmount must be greater than zero" });
+    }
+
+    const maxCoverage = catalogEntry.maxCoverage;
+    if (coverage > BigInt(maxCoverage) * 10_000_000n) {
+      throw new BadRequestException({
+        error: `coverageAmount exceeds the ${COVERAGE_NAMES[coverageType]} maximum of ${maxCoverage} USDC`,
+        maxCoverage,
+      });
+    }
+
+    const bounds = await this.onChainCoverageBounds();
+    if (bounds && (coverage < bounds.minCoverage || coverage > bounds.maxCoverage)) {
+      throw new BadRequestException({
+        error: `coverageAmount must be between ${bounds.minCoverage} and ${bounds.maxCoverage} (pool contract units) per the pool's current configuration`,
+        minCoverage: bounds.minCoverage.toString(),
+        maxCoverage: bounds.maxCoverage.toString(),
+      });
+    }
+
+    const multiplier = RISK_MULTIPLIERS[coverageType];
+    const annualRate = (this.baseRateBps() / 10_000) * multiplier;
+    const dailyRate = annualRate / 365;
+    const premiumFraction = dailyRate * durationDays;
+    const premium = BigInt(Math.floor(Number(coverage) * premiumFraction));
+
+    const policyId = uuidv4();
+    const expiresAt = Math.floor(Date.now() / 1000) + durationDays * 86_400;
+    const policy: StoredPolicy = {
+      id: policyId,
+      holder,
+      coverageType,
+      coverageTypeName: COVERAGE_NAMES[coverageType],
+      coverageAmount,
+      premium: premium.toString(),
+      durationDays,
+      expiresAt,
+      isActive: true,
+      createdAt: new Date().toISOString(),
+      triggerParams,
+    };
+
+    const paramsScVal = this.buildPolicyParamsScVal(
+      coverageType,
+      coverage,
+      durationDays,
+      TRIGGER_THRESHOLDS[coverageType]
+    );
+    const txXdr = await this.buildUnsignedBuyInvoke(holder, paramsScVal);
+
+    return { policy, txXdr, message: "Preview purchase" };
   }
 
   async buy(dto: BuyPolicyDto): Promise<{ policy: StoredPolicy; txXdr: string; message: string }> {
@@ -359,11 +358,6 @@ export class PolicyService {
       throw new BadRequestException({ error: "coverageAmount must be greater than zero" });
     }
 
-    // listTypes() advertises maxCoverage per catalog entry, but nothing
-    // enforced it here — a buyer could request coverage far beyond the
-    // advertised cap (e.g. 500,000 on a Flight Delay policy capped at
-    // 2,000) and it would be silently accepted. The Soroban pool contract
-    // enforces the equivalent check in buy_policy(); mirror it here.
     const maxCoverage = catalogEntry.maxCoverage;
     if (coverage > BigInt(maxCoverage) * 10_000_000n) {
       throw new BadRequestException({
@@ -372,12 +366,6 @@ export class PolicyService {
       });
     }
 
-    // The catalog check above is this service's own per-type policy, but
-    // the pool enforces a single global bound across every type (see
-    // onChainCoverageBounds' doc comment) — one that could be far tighter
-    // (or, after a set_pool_config() change, looser) than what the catalog
-    // advertises. Catch a mismatch here with a specific error instead of
-    // letting buildUnsignedBuyInvoke's simulation fail it opaquely.
     const bounds = await this.onChainCoverageBounds();
     if (bounds && (coverage < bounds.minCoverage || coverage > bounds.maxCoverage)) {
       throw new BadRequestException({
@@ -388,13 +376,13 @@ export class PolicyService {
     }
 
     const multiplier = RISK_MULTIPLIERS[coverageType];
-    const annualRate = (BASE_RATE_BPS / 10_000) * multiplier; // bps -> fraction, e.g. 300bps * 1.0 = 0.03 (3%)
+    const annualRate = (this.baseRateBps() / 10_000) * multiplier;
     const dailyRate = annualRate / 365;
     const premiumFraction = dailyRate * durationDays;
     const premium = BigInt(Math.floor(Number(coverage) * premiumFraction));
 
     const policyId = uuidv4();
-    const expiresAt = Math.floor(Date.now() / 1000) + durationDays * 86400;
+    const expiresAt = Math.floor(Date.now() / 1000) + durationDays * 86_400;
 
     const policy: StoredPolicy = {
       id: policyId,
@@ -420,10 +408,6 @@ export class PolicyService {
     );
     const txXdr = await this.buildUnsignedBuyInvoke(holder, paramsScVal);
 
-    return {
-      policy,
-      txXdr,
-      message: "Sign and submit to activate coverage",
-    };
+    return { policy, txXdr, message: "Sign and submit to activate coverage" };
   }
 }
