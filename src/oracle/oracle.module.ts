@@ -107,6 +107,9 @@ const attestationVerifierProvider: Provider = {
 
     // Core oracle services
     OracleService,
+    OracleGateway,
+    OracleScheduler,
+    OraclePublisherService,
     OracleMonitorService,
     FreshnessEnforcementService,
     OracleEventRepository,
@@ -118,6 +121,8 @@ const attestationVerifierProvider: Provider = {
   ],
   exports: [
     OracleService,
+    OracleGateway,
+    OraclePublisherService,
     OracleMonitorService,
     FreshnessEnforcementService,
     OracleGateway,
