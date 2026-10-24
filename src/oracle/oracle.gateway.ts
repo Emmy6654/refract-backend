@@ -117,6 +117,23 @@ export class OracleGateway
     this.logger.log('Oracle WebSocket client disconnected');
   }
 
+  broadcastAlert(reading: OracleReading): void {
+    if (!this.server) return;
+    const payload = JSON.stringify(reading);
+    for (const client of this.server.clients) {
+      if (client.readyState !== WebSocket.OPEN) continue;
+      try {
+        client.send(payload, (error) => {
+          if (error) this.logger.warn(`Oracle WebSocket send failed: ${error.message}`);
+        });
+      } catch (error) {
+        this.logger.warn(
+          `Oracle WebSocket send failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+  }
+
   /** Authenticated (ops) clients present `?token=` equal to OPS_WS_TOKEN. */
   private isAuthed(req?: IncomingMessage): boolean {
     const expected = process.env.OPS_WS_TOKEN;

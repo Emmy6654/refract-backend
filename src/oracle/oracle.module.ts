@@ -1,26 +1,27 @@
-import { Module, Provider } from '@nestjs/common';
-import { ConfigModule, ConfigService } from '@nestjs/config';
-
-import { StellarModule } from '../stellar/stellar.module';
-import { OracleController } from './oracle.controller';
-import { OracleGateway } from './oracle.gateway';
-import { OraclePublisherService } from './oracle-publisher.service';
-import { OracleScheduler } from './oracle.scheduler';
-import { OracleService } from './oracle.service';
-import { OracleMonitorService } from '../services/oracleMonitor';
-import { FreshnessEnforcementService } from './freshness/freshnessEnforcement.service';
-import { FeedCalendarResolver } from './calendar/feedCalendarResolver';
-import { ClockService } from './calendar/clock.service';
-import { FeedCalendarConfigService } from './calendar/feedCalendarConfig.service';
-import { HolidayCalendarSource } from './calendar/holidayCalendarSource';
-import { AttestationVerifierRegistry } from './attestation/attestationVerifierRegistry';
-import { AttestationVerifier } from './attestation/attestationVerifier.interface';
-import { NitroEnclaveAttestationVerifier } from './attestation/nitroEnclaveAttestationVerifier';
-import { SgxAttestationVerifier } from './attestation/sgxAttestationVerifier';
-import { AttestationPolicyService } from './attestation/attestationPolicy.service';
-import { AttestationTierService } from './attestation/attestationTier.service';
-import { SourceIndependenceService } from './weighting/sourceIndependence.service';
-import { ORACLE_CLOCK, ORACLE_CALENDAR_RESOLVER } from './oracle.tokens';
+import { Module, Provider } from "@nestjs/common";
+import { ConfigModule, ConfigService } from "@nestjs/config";
+import { DbModule } from "../db/db.module";
+import { StellarModule } from "../stellar/stellar.module";
+import { OracleController } from "./oracle.controller";
+import { OracleEventRepository } from "./oracle-event.repository";
+import { OracleGateway } from "./oracle.gateway";
+import { OraclePublisherService } from "./oracle-publisher.service";
+import { OracleScheduler } from "./oracle.scheduler";
+import { OracleService } from "./oracle.service";
+import { OracleMonitorService } from "../services/oracleMonitor";
+import { FreshnessEnforcementService } from "./freshness/freshnessEnforcement.service";
+import { FeedCalendarResolver } from "./calendar/feedCalendarResolver";
+import { ClockService } from "./calendar/clock.service";
+import { FeedCalendarConfigService } from "./calendar/feedCalendarConfig.service";
+import { HolidayCalendarSource } from "./calendar/holidayCalendarSource";
+import { AttestationVerifierRegistry } from "./attestation/attestationVerifierRegistry";
+import { AttestationVerifier } from "./attestation/attestationVerifier.interface";
+import { NitroEnclaveAttestationVerifier } from "./attestation/nitroEnclaveAttestationVerifier";
+import { SgxAttestationVerifier } from "./attestation/sgxAttestationVerifier";
+import { AttestationPolicyService } from "./attestation/attestationPolicy.service";
+import { AttestationTierService } from "./attestation/attestationTier.service";
+import { SourceIndependenceService } from "./weighting/sourceIndependence.service";
+import { ORACLE_CLOCK, ORACLE_CALENDAR_RESOLVER } from "./oracle.tokens";
 
 const clockProvider: Provider = {
   provide: ORACLE_CLOCK,
@@ -71,7 +72,7 @@ const attestationVerifierProvider: Provider = {
 };
 
 @Module({
-  imports: [ConfigModule, StellarModule],
+  imports: [ConfigModule, DbModule, StellarModule],
   controllers: [OracleController],
   providers: [
     // Clock & calendar abstraction (issue #291)
@@ -97,6 +98,7 @@ const attestationVerifierProvider: Provider = {
     OracleService,
     OracleMonitorService,
     FreshnessEnforcementService,
+    OracleEventRepository,
 
     // Gateway, scheduler & publisher
     OracleGateway,
@@ -115,6 +117,7 @@ const attestationVerifierProvider: Provider = {
     AttestationPolicyService,
     AttestationTierService,
     SourceIndependenceService,
+    OracleEventRepository,
     OracleGateway,
     OraclePublisherService,
   ],

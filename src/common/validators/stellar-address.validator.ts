@@ -9,7 +9,7 @@ import { registerDecorator, ValidationArguments, ValidationOptions } from 'class
  */
 function validateStrKey(
   value: unknown,
-  _isValid: (candidate: string) => boolean,
+  isValid: (candidate: string) => boolean,
   prefix: string,
   _args: ValidationArguments,
 ): boolean {
@@ -25,7 +25,11 @@ function validateStrKey(
     return false;
   }
 
-  return /^[A-Za-z2-7]+$/.test(value.slice(1));
+  if (!/^[A-Za-z2-7]+$/.test(value.slice(1))) {
+    return false;
+  }
+
+  return isValid(value);
 }
 
 function buildMessage(value: unknown, expected: string): string {

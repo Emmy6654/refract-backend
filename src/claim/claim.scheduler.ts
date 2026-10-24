@@ -16,17 +16,6 @@ export const CLAIM_PIPELINE_STAGE = 'claim-settlement';
  */
 const SHUTDOWN_DRAIN_TIMEOUT_MS = 30_000;
 
-/**
- * Default interval (in seconds) used when the registry has no override for the
- * claim scheduler interval. Kept as a fallback only; the effective value is
- * read from the protocol-parameters registry at runtime so governance can
- * adjust it without a code deploy.
- */
-export const DEFAULT_CLAIM_SCHEDULER_INTERVAL_SECONDS = 60;
-
-/** Registry key for the claim scheduler interval. */
-export const CLAIM_SCHEDULER_INTERVAL_KEY = 'scheduler.claim.interval_seconds';
-
 @Injectable()
 export class ClaimScheduler implements OnModuleInit, OnApplicationShutdown {
   readonly logger = new Logger(ClaimScheduler.name);
@@ -82,27 +71,6 @@ export class ClaimScheduler implements OnModuleInit, OnApplicationShutdown {
     }
   }
 
-  private waitForInFlight(): Promise<boolean> {
-    const run = this.inFlight;
-    if (!run) {
-      return Promise.resolve(true);
-    }
-
-    return new Promise<boolean>((resolve) => {
-      const timer = setTimeout(() => resolve(false), SHUTDOWN_DRAIN_TIMEOUT_MS);
-      if (typeof timer.unref === 'function') {
-        timer.unref();
-      }
-
-      run
-        .catch(() => undefined)
-        .then(() => {
-          clearTimeout(timer);
-          resolve(true);
-        });
-    });
-  }
-
   /**
    * Resolve the claim scheduler interval from the protocol-parameters registry,
    * falling back to the default when no override is configured.
@@ -141,8 +109,7 @@ export class ClaimScheduler implements OnModuleInit, OnApplicationShutdown {
       return;
     }
 
-    const interval = await this.getIntervalSeconds();
-    this.logger.debug(`Running claim processing (interval=${interval}s)`);
+    this.logger.debug("Running claim processing");
 
     const run = this.runSettlement();
     this.inFlight = run;
@@ -173,5 +140,26 @@ export class ClaimScheduler implements OnModuleInit, OnApplicationShutdown {
     } catch (error) {
       this.logger.error("Claim scan failed", error instanceof Error ? error.stack : String(error));
     }
+  }
+
+  private waitForInFlight(): Promise<boolean> {
+    const run = this.inFlight;
+    if (!run) {
+      return Promise.resolve(true);
+    }
+
+    return new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => resolve(false), SHUTDOWN_DRAIN_TIMEOUT_MS);
+      if (typeof timer.unref === 'function') {
+        timer.unref();
+      }
+
+      run
+        .catch(() => undefined)
+        .then(() => {
+          clearTimeout(timer);
+          resolve(true);
+        });
+    });
   }
 }

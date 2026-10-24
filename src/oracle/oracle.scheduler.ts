@@ -2,6 +2,8 @@ import { Injectable, Logger, OnModuleInit, OnModuleDestroy, Optional } from '@ne
 import { SchedulerRegistry } from '@nestjs/schedule';
 import { CronJob } from 'cron';
 import { OracleService } from './oracle.service';
+import { OracleGateway } from './oracle.gateway';
+import { OraclePublisherService } from './oracle-publisher.service';
 import { ProtocolParametersService } from '../parameters/protocol-parameters.service';
 import { ProtocolParameterKey } from '../parameters/protocol-parameter-key.enum';
 import { ReadingBus } from './reading-bus';
@@ -18,6 +20,8 @@ export class OracleScheduler implements OnModuleInit, OnModuleDestroy {
 
   constructor(
     private readonly oracleService: OracleService,
+    private readonly oracleGateway: OracleGateway,
+    private readonly oraclePublisher: OraclePublisherService,
     private readonly schedulerRegistry: SchedulerRegistry,
     private readonly protocolParameters: ProtocolParametersService,
     private readonly readingBus: ReadingBus,
@@ -59,6 +63,10 @@ export class OracleScheduler implements OnModuleInit, OnModuleDestroy {
     try {
       const result: unknown = await this.oracleService.refreshPrices();
       const readings = Array.isArray(result) ? (result as OracleReading[]) : [];
+      for (const reading of readings) {
+        await this.oraclePublisher.maybePublish(reading);
+        if (reading.severity !== 'low') this.oracleGateway.broadcastAlert(reading);
+      }
       // Hand readings to the API tier for the WebSocket feed and reads.
       await this.readingBus.publishAll(readings);
       this.heartbeat?.beat(ORACLE_PIPELINE_STAGE);

@@ -1,6 +1,34 @@
 import { Injectable } from '@nestjs/common';
 import { DatabaseService } from '../db/database.service';
-import { ClaimResult } from './claim-result';
+
+export interface ClaimRecord {
+  id: string;
+  policyId: string;
+  coverageType: string;
+  status: string;
+  payoutAmount?: string | number | null;
+  premiumAmount?: string | number | null;
+  triggerDetectedAt?: Date | string | null;
+  processedAt?: Date | string | null;
+}
+
+export interface OnChainClaimInput {
+  policyUuid: string;
+  holder: string;
+  coverageType: number;
+  payout: bigint;
+  triggerValue: number;
+  triggerSource: string;
+  txHash: string;
+}
+
+const COVERAGE_TYPE_DB = [
+  'stablecoin_depeg',
+  'market_crash',
+  'liquidation_shield',
+  'smart_contract_risk',
+  'flight_delay',
+] as const;
 
 /**
  * Per-coverage-type operational performance metrics derived from the claims
@@ -129,7 +157,7 @@ function assertBoundedWindow(windowStart: Date, windowEnd: Date): void {
 export class ClaimRepository {
   constructor(private readonly db: DatabaseService) {}
 
-  async save(result: ClaimResult): Promise<ClaimResult> {
+  async save(result: ClaimRecord): Promise<ClaimRecord> {
     await this.db.query(
       `INSERT INTO claims (id, policy_id, coverage_type, status, payout_amount, premium_amount, trigger_detected_at, processed_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -153,15 +181,37 @@ export class ClaimRepository {
     return result;
   }
 
-  async findById(id: string): Promise<ClaimResult | null> {
-    const rows = await this.db.query<ClaimResult>(
+  async findById(id: string): Promise<ClaimRecord | null> {
+    const result = await this.db.query<ClaimRecord>(
       `SELECT id, policy_id AS "policyId", coverage_type AS "coverageType", status,
               payout_amount AS "payoutAmount", premium_amount AS "premiumAmount",
               trigger_detected_at AS "triggerDetectedAt", processed_at AS "processedAt"
        FROM claims WHERE id = $1`,
       [id],
     );
-    return rows[0] ?? null;
+    return result.rows[0] ?? null;
+  }
+
+  async insertFromChain(input: OnChainClaimInput): Promise<void> {
+    const coverageType = COVERAGE_TYPE_DB[input.coverageType];
+    if (!coverageType) {
+      throw new Error(`Unknown coverage type ordinal: ${input.coverageType}`);
+    }
+    await this.db.query(
+      `INSERT INTO claims
+         (policy_id, holder, coverage_type, payout, trigger_value, trigger_source, tx_hash)
+       SELECT $1, $2, $3::coverage_type, $4, $5, $6, $7
+       WHERE NOT EXISTS (SELECT 1 FROM claims WHERE tx_hash = $7)`,
+      [
+        input.policyUuid,
+        input.holder,
+        coverageType,
+        input.payout.toString(),
+        input.triggerValue,
+        input.triggerSource,
+        input.txHash,
+      ],
+    );
   }
 
   /**
@@ -219,7 +269,7 @@ export class ClaimRepository {
        ORDER BY t.coverage_type ASC`,
     );
 
-    return rows.map((row) => {
+    return rows.rows.map((row) => {
       const totalPremium = toNumber(row.total_premium_amount);
       const totalPayout = toNumber(row.total_payout_amount);
       return {
