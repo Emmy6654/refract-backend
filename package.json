@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Refract oracle network monorepo",
+  "main": "dist/main.js",
   "workspaces": [
     "refract-backend",
     "refract-frontend",
@@ -10,6 +11,9 @@
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
+    "dev": "nodemon --exec ts-node src/main.ts",
+    "start": "node dist/main.js",
+    "typecheck": "tsc --noEmit",
     "test": "npm run test:unit && npm run test:contracts",
     "test:unit": "npm run test --workspaces --if-present",
     "test:contracts": "node test/contracts/verify.js",
@@ -31,6 +35,9 @@
     "transform": {
       "^.+\\.(t|j)s$": "ts-jest"
     },
+    "transformIgnorePatterns": [
+      "/node_modules/(?!(?:@stellar/stellar-sdk|@noble/.*|@scure/.*|uint8array-extras|hexoid|bignumber.js))"
+    ],
     "collectCoverageFrom": ["**/*.(t|j)s"],
     "coverageDirectory": "../coverage"
   },
@@ -60,6 +67,7 @@
     "pg": "^8.11.3",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2",
+    "uuid": "^14.0.3",
     "winston": "^3.11.0",
     "ws": "^8.16.0",
     "zod": "^3.22.4"
