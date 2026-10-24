@@ -54,4 +54,3 @@ export class HealthController {
     return this.healthService.getDetail();
   }
 }
-}

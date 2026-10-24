@@ -106,6 +106,8 @@ const attestationVerifierProvider: Provider = {
     OracleService,
     OracleMonitorService,
     FreshnessEnforcementService,
+
+    // Gateway, scheduler & publisher
     OracleGateway,
     OracleScheduler,
     OraclePublisherService,
@@ -124,6 +126,8 @@ const attestationVerifierProvider: Provider = {
     AttestationPolicyService,
     AttestationTierService,
     SourceIndependenceService,
+    OracleGateway,
+    OraclePublisherService,
   ],
 })
 export class OracleModule {}

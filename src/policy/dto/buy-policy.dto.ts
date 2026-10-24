@@ -1,16 +1,43 @@
 import {
-  IsInt,
-  IsObject,
-  IsOptional,
   IsString,
   IsNotEmpty,
+  IsOptional,
   IsNumber,
-  Length,
-  Matches,
-  Max,
+  IsInt,
   Min,
+  Max,
+  Matches,
+  Length,
+  IsObject,
+  Validate,
+  ValidateIf,
+  ValidationArguments,
+  ValidatorConstraint,
+  ValidatorConstraintInterface,
 } from "class-validator";
 import { IsStellarPublicKey } from "../../common/validators/stellar-address.validator";
+
+@ValidatorConstraint({ name: "triggerParams", async: false })
+class TriggerParamsConstraint implements ValidatorConstraintInterface {
+  validate(value: unknown): boolean {
+    if (value === null || value === undefined) return false;
+    if (typeof value !== "object" || Array.isArray(value)) return false;
+
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (entries.length === 0 || entries.length > 8) return false;
+
+    return entries.every(([key, entryValue]) => {
+      if (typeof key !== "string" || key.length === 0 || key.length > 64) return false;
+      if (typeof entryValue === "string") return entryValue.length > 0 && entryValue.length <= 256;
+      if (typeof entryValue === "number" || typeof entryValue === "boolean") return Number.isFinite(entryValue);
+      return false;
+    });
+  }
+
+  defaultMessage(args: ValidationArguments): string {
+    return `${args.property} must be a flat object of scalar values with at most 8 keys`;
+  }
+}
 
 export class BuyPolicyDto {
   @IsString()
@@ -44,6 +71,8 @@ export class BuyPolicyDto {
 
   @IsOptional()
   @IsObject()
+  @ValidateIf((obj) => obj.triggerParams !== undefined)
+  @Validate(TriggerParamsConstraint)
   triggerParams?: Record<string, unknown>;
 }
 
@@ -55,4 +84,3 @@ export class BuyPolicyDto {
  * without building or returning an XDR.
  */
 export class PreflightPolicyDto extends BuyPolicyDto {}
-</｜｜DSML｜｜ parameter>

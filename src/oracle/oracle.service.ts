@@ -69,7 +69,7 @@ export class OracleService {
   constructor(
     private readonly configService: ConfigService<AppConfig, true>,
     private readonly cacheService: CacheService,
-    @Optional() private readonly oracleTrustService?: OracleTrustService,
+    @Optional() private readonly oracleTrustService?: OracleTrustService
   ) {
     const oracles = this.configService.get("oracles", { infer: true });
     this.timeoutMs = oracles.httpTimeoutMs;

@@ -17,7 +17,7 @@ function buildReading(overrides: Partial<OracleReading> = {}): OracleReading {
 }
 
 function buildServices() {
-  const oracleService = { checkAllFresh: jest.fn() } as unknown as jest.Mocked<OracleService>;
+  const oracleService = { checkAllFresh: jest.fn(), checkAll: jest.fn() } as unknown as jest.Mocked<OracleService>;
   const oracleGateway = { broadcastAlert: jest.fn() } as unknown as jest.Mocked<OracleGateway>;
   const oraclePublisher = { maybePublish: jest.fn().mockResolvedValue(null) } as unknown as jest.Mocked<
     import("./oracle-publisher.service").OraclePublisherService
@@ -33,6 +33,7 @@ describe("OracleScheduler", () => {
       const high = buildReading({ coverageType: "MarketCrash", severity: "high" });
       const triggered = buildReading({ coverageType: "SmartContractRisk", severity: "triggered" });
       oracleService.checkAllFresh.mockResolvedValue([low, high, triggered]);
+      oracleService.checkAll.mockResolvedValue([low, high, triggered]);
       const scheduler = new OracleScheduler(oracleService, oracleGateway, oraclePublisher);
 
       await scheduler.pollOracles();
@@ -47,6 +48,7 @@ describe("OracleScheduler", () => {
     it("does not broadcast anything when every reading is 'low' severity", async () => {
       const { oracleService, oracleGateway, oraclePublisher } = buildServices();
       oracleService.checkAllFresh.mockResolvedValue([buildReading({ severity: "low" })]);
+      oracleService.checkAll.mockResolvedValue([buildReading({ severity: "low" })]);
       const scheduler = new OracleScheduler(oracleService, oracleGateway, oraclePublisher);
 
       await scheduler.pollOracles();
@@ -58,6 +60,7 @@ describe("OracleScheduler", () => {
     it("catches and logs an error from checkAll() instead of throwing", async () => {
       const { oracleService, oracleGateway, oraclePublisher } = buildServices();
       oracleService.checkAllFresh.mockRejectedValue(new Error("all sources down"));
+      oracleService.checkAll.mockRejectedValue(new Error("all sources down"));
       const scheduler = new OracleScheduler(oracleService, oracleGateway, oraclePublisher);
 
       await expect(scheduler.pollOracles()).resolves.toBeUndefined();
